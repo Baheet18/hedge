@@ -1,33 +1,50 @@
+// Orchestration. Venue-agnostic: World (agent-supplied) and Polymarket (searched) candidates are ranked together by fit.
+// World is where PayBox can buy today, so only a World pick gets a world_buy_outcome instruction.
 import { costToCover, type Cost } from "./math.js";
 import { aiRate, finalize, FIT_ORDER, overlap } from "./fit.js";
-import { normalizeWorld, referenceCandidates } from "./universe.js";
-import { rulesParse, understand } from "./worry.js";
+import { normalizeWorldAll, referenceCandidates } from "./universe.js";
+import { understand } from "./worry.js";
 import type { Candidate, Fit, Worry } from "./types.js";
 
 export interface PlanInput { worry: string; amountAtRisk: number; maxCost?: number | null; candidates?: unknown[] }
 export interface Option {
-  market: { source: Candidate["source"]; venue: string; marketId: string; title: string; closeTime: string | null; url: string | null };
+  market: { source: Candidate["source"]; venue: string; marketId: string; title: string; closeTime: string | null; url: string | null; settlementSources: string[] };
+  buyableViaPayBox: boolean;
   fit: Fit; side: "YES" | "NO"; whatsCovered: string; rulesQuote: string | null; whatsNotCovered: string[]; ratedBy: "ai" | "rules";
-  cost: Cost | null; outcomeMint: string | null;
+  cost: Cost | null; outcomeMint: string | null; warnings: string[];
 }
+export type Verdict = "hedge" | "hedge_elsewhere" | "no_good_hedge" | "not_a_hedge";
 export interface Plan {
-  verdict: "hedge" | "no_good_hedge"; headline: string; worry: Worry; amountAtRisk: number; maxCost: number | null;
-  best: Option | null; alternatives: Option[];
+  verdict: Verdict; headline: string; worry: Worry; amountAtRisk: number; maxCost: number | null;
+  best: Option | null; buyableNow: Option | null; alternatives: Option[];
   execute: null | { tool: "world_buy_outcome"; marketId: string; outcomeMint: string | null; side: "YES" | "NO"; amountUsd: number; shares: number; note: string };
-  next: string[]; universe: "world" | "reference"; warnings: string[]; disclaimer: string; ms: number;
+  next: string[]; searched: { world: number; polymarket: number }; aiDegraded: boolean; warnings: string[]; disclaimer: string; ms: number;
 }
 
-const MAX_JUDGE = 8;
-/** Above this all-in price per $1 of payout, the hedge returns too little to be worth recommending. */
-export const MAX_PRICE = Number(process.env.HEDGE_MAX_PRICE ?? 0.8);
+const PER_VENUE = 6;
+/** Above this all-in price per $1 of payout, the cover returns too little to recommend. */
+export const MAX_PRICE = Number(process.env.HEDGE_MAX_PRICE ?? 0.7);
+/** At or above this, warn that the market thinks the bad event is likely, so cover is expensive. */
+export const EXPENSIVE = 0.5;
 const usd = (n: number) => `$${n.toFixed(2)}`;
+const cents = (p: number) => `${Math.round(p * 1000) / 10}¢`;
 
 export async function preview(worry: string) {
   const w = await understand(worry);
+  if (w.isBet) return { worry: w, worldSearch: [], next: ["That's a bet, not a hedge. Hedge only finds cover for a loss the user would suffer; don't run hedge_plan for this."] };
   return { worry: w, worldSearch: w.searchQueries, next: [
     `Call world_search for each of: ${w.searchQueries.map((q) => JSON.stringify(q)).join(", ")}.`,
-    "For the promising hits call world_get_markets (and world_market_prices) to get title, rules, close time, YES/NO mints and asks.",
-    "Then call hedge_plan with the worry, amountAtRisk and those markets as candidates." ] };
+    "Search results have no rules. For each promising hit, call world_get_events(ticker) or world_get_markets(ticker) to get the rules (rulesPrimary/rulesSecondary), settlement sources, close time and YES/NO mints, plus world_market_prices for asks. Optionally world_orderbook for the size available at the ask (askQty).",
+    "Then call hedge_plan with the worry, amountAtRisk and those market (or event) objects as candidates. Hedge also checks Polymarket itself." ] };
+}
+
+function decide(o: Option): string[] {
+  const why: string[] = [];
+  if (FIT_ORDER[o.fit] < FIT_ORDER.close) why.push(`the closest market is only a ${o.fit} fit`);
+  if (!o.cost) why.push("the matching side has no live price");
+  else if (o.cost.price + o.cost.feePerShare >= MAX_PRICE) why.push(`it costs ${Math.round((o.cost.price + o.cost.feePerShare) * 100)}¢ per $1 of cover, so it protects almost nothing`);
+  else if (o.cost.shares <= 0) why.push("no cover is available at this price");
+  return why;
 }
 
 export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
@@ -36,53 +53,65 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   if (!input.worry?.trim()) throw new Error("worry is required");
   if (!(amount > 0 && amount <= 1_000_000)) throw new Error("amountAtRisk must be between 0 and 1,000,000 (USD)");
   const text = input.worry.trim().slice(0, 600);
-  let universe: Plan["universe"] = "world";
-  let cs = (input.candidates ?? []).map(normalizeWorld).filter((c): c is Candidate => !!c);
-  if ((input.candidates?.length ?? 0) > cs.length) warnings.push(`${(input.candidates?.length ?? 0) - cs.length} candidate(s) skipped: no id or title.`);
-  let w: Worry; let raw: Awaited<ReturnType<typeof aiRate>>;
-  if (cs.length) {
-    // World mode: read the worry and rate the candidates in parallel (one round-trip of latency).
-    const quick = rulesParse(text, now);
-    cs = cs.map((c) => ({ c, o: overlap(quick, c) })).sort((a, b) => b.o - a.o).slice(0, MAX_JUDGE).map((x) => x.c);
-    [w, raw] = await Promise.all([understand(text, now), aiRate(quick, cs, now)]);
-  } else {
-    w = await understand(text, now);
-    universe = "reference"; const r = await referenceCandidates(w.searchQueries.length ? w.searchQueries : [w.subject]); cs = r.candidates; warnings.push(...r.warnings);
-    warnings.push("No World markets were supplied, so these are reference markets (Polymarket) for comparison only. They can't be bought through PayBox's World plugin: run world_search with the suggested queries and call hedge_plan again with the results.");
-    cs = cs.map((c) => ({ c, o: overlap(w, c) })).sort((a, b) => b.o - a.o).slice(0, MAX_JUDGE).map((x) => x.c);
-    raw = await aiRate(w, cs, now);
-  }
+  const w = await understand(text, now);
+  const base = { worry: w, amountAtRisk: amount, maxCost, disclaimer: "Estimates only. Prices move; fees are estimated (World shows the exact fee at buy). A hedge pays only if the market's rules resolve the way quoted, not whenever you feel the loss." };
+  if (w.isBet) return { ...base, verdict: "not_a_hedge", headline: "That's a bet, not a hedge. Hedge finds cover for a loss you'd suffer; it doesn't pick winners.", best: null, buyableNow: null, alternatives: [], execute: null,
+    next: ["Don't buy anything through Hedge for this. If the user wants to bet, that's their call outside Hedge."], searched: { world: 0, polymarket: 0 }, aiDegraded: w.parsedBy !== "ai", warnings, ms: Date.now() - t0 };
+
+  const score = (c: Candidate) => overlap(w, c);
+  const worldAll = (input.candidates ?? []).flatMap(normalizeWorldAll);
+  if ((input.candidates?.length ?? 0) && !worldAll.length) warnings.push("None of the World candidates had an id and title.");
+  if (worldAll.some((c) => !c.rules)) warnings.push("Some World candidates had no rules: call world_get_events / world_get_markets for them, or they can't rate above loose.");
+  const world = worldAll.map((c) => ({ c, o: score(c) })).sort((a, b) => b.o - a.o).slice(0, PER_VENUE).map((x) => x.c);
+  const poly = await referenceCandidates(w.searchQueries.length ? w.searchQueries : [w.subject], score, PER_VENUE);
+  warnings.push(...poly.warnings);
+  if (!worldAll.length) warnings.push("No World markets were supplied, so nothing here is buyable through PayBox yet. Run world_search with the preview queries and pass the results as candidates.");
+  const cs = [...world, ...poly.candidates];
+  const raw = await aiRate(w, cs, now);
   const js = finalize(w, cs, raw, now);
-  const opts: Option[] = cs.map((c, i) => { const j = js[i]!; const p = j.side === "YES" ? c.yesAsk : c.noAsk; let cost: Cost | null = null;
-    if (p !== null && p > 0 && p < 1) cost = costToCover(p, amount, maxCost);
-    return { market: { source: c.source, venue: c.venue, marketId: c.marketId, title: c.title, closeTime: c.closeTime, url: c.url }, fit: j.fit, side: j.side,
-      whatsCovered: j.covered, rulesQuote: j.quote, whatsNotCovered: j.gaps, ratedBy: j.by, cost, outcomeMint: j.side === "YES" ? c.yesMint : c.noMint }; });
-  opts.sort((a, b) => FIT_ORDER[b.fit] - FIT_ORDER[a.fit] || (a.cost ? 0 : 1) - (b.cost ? 0 : 1) || (a.cost?.cost ?? 9e9) - (b.cost?.cost ?? 9e9));
-  const top = opts[0] ?? null;
-  const reasons: string[] = [];
-  if (!top) reasons.push("no markets matched this worry");
-  else {
-    if (FIT_ORDER[top.fit] < FIT_ORDER.close) reasons.push(`the closest market is only a ${top.fit} fit`);
-    if (!top.cost) reasons.push("the matching side has no live price");
-    else if (top.cost.price + top.cost.feePerShare >= MAX_PRICE) reasons.push(`it costs ${Math.round((top.cost.price + top.cost.feePerShare) * 100)}¢ per $1 of cover, so it protects almost nothing`);
+  const opts: Option[] = cs.map((c, i) => {
+    const j = js[i]!; const side = j.side; const p = side === "YES" ? c.yesAsk : c.noAsk; const ow: string[] = [];
+    const avail = side === "YES" ? c.askQty.yes : c.askQty.no;
+    let cost: Cost | null = null;
+    if (p !== null && p > 0 && p < 1) {
+      cost = costToCover(p, amount, maxCost, avail);
+      if (cost.liquidityCapped) ow.push(`Only ${usd(cost.payout)} of cover is available at this price (${avail} shares at the ask); more would cost more.`);
+      if (cost.capped) ow.push(`Your ${usd(maxCost!)} cap buys ${Math.round(cost.coverage * 100)}% of the cover.`);
+      if (p + cost.feePerShare >= EXPENSIVE) ow.push(`The market thinks this is likely (${cents(p)}), so cover is expensive: ${usd(cost.cost)} to get ${usd(cost.payout)}.`);
+    }
+    return { market: { source: c.source, venue: c.venue, marketId: c.marketId, title: c.title, closeTime: c.closeTime, url: c.url, settlementSources: c.sources },
+      buyableViaPayBox: c.source === "world", fit: j.fit, side, whatsCovered: j.covered, rulesQuote: j.quote, whatsNotCovered: j.gaps, ratedBy: j.by, cost, outcomeMint: side === "YES" ? c.yesMint : c.noMint, warnings: ow };
+  });
+  // Rank by fit; within a fit level, buyable-now first, then cheaper per $1 of cover.
+  const per = (o: Option) => (o.cost ? o.cost.price + o.cost.feePerShare : 9);
+  opts.sort((a, b) => FIT_ORDER[b.fit] - FIT_ORDER[a.fit] || (a.cost ? 0 : 1) - (b.cost ? 0 : 1) || Number(b.buyableViaPayBox) - Number(a.buyableViaPayBox) || per(a) - per(b));
+  const good = opts.filter((o) => decide(o).length === 0);
+  const best = good[0] ?? null;
+  const buyableNow = best && !best.buyableViaPayBox ? good.find((o) => o.buyableViaPayBox) ?? null : best;
+  const aiDegraded = w.parsedBy !== "ai" || js.some((j) => j.by !== "ai");
+
+  let verdict: Verdict; let headline: string; const next: string[] = []; let execute: Plan["execute"] = null;
+  const buy = (o: Option) => {
+    execute = { tool: "world_buy_outcome", marketId: o.market.marketId, outcomeMint: o.outcomeMint, side: o.side, amountUsd: o.cost!.cost, shares: o.cost!.shares,
+      note: `Buy ${o.side} on World for about ${usd(o.cost!.cost)} (≈${o.cost!.shares} shares at ${cents(o.cost!.price)} + est. fees). Re-check with world_market_prices first; if it moved more than 2¢, call hedge_plan again.` };
+    if (!o.outcomeMint) next.push(`The ${o.side} outcome mint wasn't in the candidate data: call world_filter_outcome_mints for ${o.market.marketId} to get it.`);
+    next.push(`Confirm with the user, then call world_buy_outcome with the ${o.side} outcome mint and ${usd(o.cost!.cost)}.`,
+      `If the wallet holds less than ${usd(o.cost!.cost)} USDC, offer PayBox's get_buy_link (MoonPay) to top up first.`);
+  };
+  if (!best) {
+    verdict = "no_good_hedge";
+    headline = `No good hedge: ${opts[0] ? decide(opts[0]).join("; ") : "no markets matched this worry"}.`;
+    next.push("Don't buy anything for this worry. Tell the user plainly there is no good hedge listed.");
+  } else if (best.buyableViaPayBox) {
+    verdict = "hedge";
+    headline = `${best.fit === "exact" ? "Good" : "Decent"} hedge: buy ${best.side} on World "${best.market.title}" for ${usd(best.cost!.cost)} → pays ${usd(best.cost!.payout)} if it happens (${best.fit} fit).`;
+    buy(best);
+  } else {
+    verdict = "hedge_elsewhere";
+    headline = `Best protection is on Polymarket at ${cents(best.cost!.price)}: buy ${best.side} on "${best.market.title}" there (${best.market.url}). ${usd(best.cost!.cost)} covers ${usd(best.cost!.payout)} (${best.fit} fit).`;
+    if (buyableNow) { headline += ` Buyable now through PayBox: ${buyableNow.side} on World "${buyableNow.market.title}" for ${usd(buyableNow.cost!.cost)} (${buyableNow.fit} fit).`; buy(buyableNow); }
+    else next.unshift(`Hedge can't buy on Polymarket. Give the user the link (${best.market.url}); nothing on World fits well enough to buy through PayBox.`);
   }
-  const good = !!top && reasons.length === 0;
-  const best = good ? top : null;
-  let execute: Plan["execute"] = null; const next: string[] = [];
-  if (best && best.cost) {
-    if (best.market.source === "world") {
-      execute = { tool: "world_buy_outcome", marketId: best.market.marketId, outcomeMint: best.outcomeMint, side: best.side, amountUsd: best.cost.cost, shares: best.cost.shares,
-        note: `Buy ${best.side} on World for about ${usd(best.cost.cost)} (≈${best.cost.shares} shares at ${Math.round(best.cost.price * 100)}¢ + est. fees). Re-check the price with world_market_prices first; if it moved more than 2¢, call hedge_plan again.` };
-      if (!best.outcomeMint) next.push(`The ${best.side} outcome mint wasn't in the candidate data: call world_filter_outcome_mints for market ${best.market.marketId} to get it.`);
-      next.push(`Confirm with the user, then call world_buy_outcome with the ${best.side} outcome mint and ${usd(best.cost.cost)}.`);
-      next.push(`If the wallet holds less than ${usd(best.cost.cost)} USDC, offer PayBox's get_buy_link (MoonPay) to top up first.`);
-    } else next.push(`Best reference match is on ${best.market.venue}. Run world_search ${JSON.stringify(best.market.title)} (and ${w.searchQueries.map((q) => JSON.stringify(q)).join(", ")}) and call hedge_plan again with the World results to get a buyable plan.`);
-  } else next.push("Don't buy anything for this worry right now. Tell the user plainly there is no good hedge listed.", ...(universe === "reference" ? [`Optionally search World too: world_search ${w.searchQueries.map((q) => JSON.stringify(q)).join(", ")}`] : []));
-  const headline = best && best.cost && best.market.source === "reference"
-    ? `Reference match only (not buyable here): YES-equivalent "${best.market.title}" on ${best.market.venue} at ${Math.round(best.cost.price * 100)}¢ (${best.fit} fit). Search World for the same market and re-run with it as a candidate.`.replace("YES-equivalent", best.side)
-    : best && best.cost
-    ? `${best.fit === "exact" ? "Good" : "Decent"} hedge: buy ${best.side} on "${best.market.title}" for ${usd(best.cost.cost)} → pays ${usd(best.cost.payout)} if it happens (${best.fit} fit).`
-    : `No good hedge: ${reasons.join("; ")}.`;
-  return { verdict: good ? "hedge" : "no_good_hedge", headline, worry: w, amountAtRisk: amount, maxCost, best, alternatives: opts.filter((o) => o !== best).slice(0, 3),
-    execute, next, universe, warnings, disclaimer: "Estimates only. Prices move; fees are estimated (World shows the exact fee at buy). A hedge pays only if the market's rules resolve the way quoted, not whenever you feel the loss.", ms: Date.now() - t0 };
+  return { ...base, verdict, headline, best, buyableNow: buyableNow && buyableNow !== best ? buyableNow : null, alternatives: opts.filter((o) => o !== best && o !== buyableNow).slice(0, 3),
+    execute, next, searched: { world: worldAll.length, polymarket: poly.candidates.length }, aiDegraded, warnings, ms: Date.now() - t0 };
 }

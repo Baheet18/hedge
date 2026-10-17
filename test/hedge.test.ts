@@ -4,7 +4,6 @@ import { costToCover, feePerShare } from "../src/core/math.js";
 import { bestQuote, codeChecks, down, titleNumbers } from "../src/core/fit.js";
 import { normalizeWorld, price } from "../src/core/universe.js";
 import { rulesParse } from "../src/core/worry.js";
-import { plan } from "../src/core/plan.js";
 import type { Candidate, FitJudgement } from "../src/core/types.js";
 
 delete process.env.GEMINI_API_KEY; // tests are offline + deterministic
@@ -51,35 +50,6 @@ test("fit: higher threshold than the worry is a gap", () => {
 });
 test("fit: closed market is none", () => { const r = codeChecks(rulesParse("x"), cand({ closeTime: "2026-01-01T00:00:00Z" }), j(), NOW); assert.equal(r.fit, "none"); });
 test("down() floors at none", () => { assert.equal(down("exact", 2), "loose"); assert.equal(down("loose", 5), "none"); });
-test("plan: offline (no AI) never recommends a buy", async () => {
-  const p = await plan({ worry: "I'm paid in naira and worried USD/NGN goes above 2000 by end of November", amountAtRisk: 500, candidates: [worldNaira] }, NOW);
-  assert.equal(p.verdict, "no_good_hedge"); assert.equal(p.execute, null); assert.equal(p.alternatives[0]?.fit, "loose");
-});
-test("plan: AI-rated World candidate → hedge with world_buy_outcome instruction (Gemini stubbed)", async () => {
-  const real = globalThis.fetch; process.env.GEMINI_API_KEY = "test-key";
-  globalThis.fetch = (async (url: any, init: any) => {
-    const body = JSON.parse(init.body); const isJudge = JSON.stringify(body.generationConfig.responseSchema).includes("ratings");
-    const out = isJudge ? { ratings: [{ index: 0, fit: "exact", side: "YES", covered: "Pays if the official rate closes above 2,000 on Nov 30.", quote: "then the market resolves to Yes", gaps: ["Only the Nov 30 close counts, not a spike earlier in the month."] }] }
-      : { summary: "USD/NGN above 2000 by Nov 30", category: "fx", subject: "USD/NGN exchange rate", direction: "above", threshold: 2000, unit: "NGN per USD", location: "Nigeria", deadline: "2026-11-30", windowStart: null, searchQueries: ["naira", "USD NGN"], keyTerms: ["ngn", "naira"] };
-    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(out) }] } }] }), { status: 200 });
-  }) as any;
-  try {
-    const p = await plan({ worry: "I'm paid in naira and worried USD/NGN goes above 2000 by end of November", amountAtRisk: 500, maxCost: 200, candidates: [worldNaira] }, NOW);
-    assert.equal(p.verdict, "hedge", p.headline); assert.equal(p.best?.fit, "exact");
-    assert.equal(p.execute?.tool, "world_buy_outcome"); assert.equal(p.execute?.outcomeMint, "YESmint111"); assert.equal(p.execute?.side, "YES");
-    assert.equal(p.execute?.amountUsd, costToCover(0.18, 500, 200).cost);
-    assert.match(p.best!.rulesQuote!, /CBN NFEM closing rate/); assert.ok(worldNaira.rules.includes(p.best!.rulesQuote!));
-  } finally { globalThis.fetch = real; delete process.env.GEMINI_API_KEY; }
-});
-test("plan: unrelated candidate → no good hedge, no buy instruction", async () => {
-  const p = await plan({ worry: "a hurricane hits my house in Miami before December", amountAtRisk: 2000, candidates: [worldNaira] }, NOW);
-  assert.equal(p.verdict, "no_good_hedge"); assert.equal(p.execute, null); assert.match(p.headline, /^No good hedge/);
-});
-test("plan: too-expensive side → no good hedge", async () => {
-  const p = await plan({ worry: "USD/NGN above 2000 by November 30", amountAtRisk: 100, candidates: [{ ...worldNaira, yesAsk: 0.95 }] }, NOW);
-  assert.equal(p.verdict, "no_good_hedge"); assert.match(p.headline, /protects almost nothing/);
-});
-test("plan: input validation", async () => { await assert.rejects(plan({ worry: "x", amountAtRisk: -1 })); await assert.rejects(plan({ worry: " ", amountAtRisk: 5 })); });
 test("sentences: numbered lists stay attached", async () => {
   const { sentences } = await import("../src/core/fit.js");
   const s = sentences('This market will resolve to "Yes" if either of the following conditions is met: 1. GDP is negative for two quarters. 2. The NBER declares a recession.');

@@ -12,6 +12,7 @@ export interface Worry {
   windowStart: string | null;   // ISO date the exposure starts (trip start)
   searchQueries: string[];      // for world_search / reference search
   keyTerms: string[];
+  isBet: boolean;               // speculation ("put money on the Knicks"), not protection against a loss
   parsedBy: "ai" | "rules";
 }
 export interface Candidate {
@@ -25,5 +26,7 @@ export interface Candidate {
   yesBid: number | null; noBid: number | null;
   yesMint: string | null; noMint: string | null;
   url: string | null;
+  sources: string[];             // who settles it (e.g. Chainlink, NHC)
+  askQty: { yes: number | null; no: number | null }; // shares available at the ask (from world_orderbook)
 }
 export interface FitJudgement { marketId: string; fit: Fit; side: "YES" | "NO"; covered: string; gaps: string[]; quote: string | null; by: "ai" | "rules" }

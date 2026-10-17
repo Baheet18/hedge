@@ -61,6 +61,9 @@ export function codeChecks(w: Worry, c: Candidate, j: FitJudgement, now = new Da
     }
   }
   if (/\b(and will|combined outcome|parlay)\b/i.test(`${c.title} ${c.rules.slice(0, 300)}`) && FIT_ORDER[fit] > FIT_ORDER.loose) { fit = "loose"; gaps.unshift("Combined market: it also needs a second, unrelated event to happen before it pays."); }
+  if (!/\b(exactly|between)\b/i.test(w.text) && /\bexactly\b|\bbetween\b[^?.]*\band\b|\d\s*[-–]\s*\$?\d/i.test(c.title)) {
+    if (FIT_ORDER[fit] > FIT_ORDER.loose) fit = "loose"; gaps.unshift("Partial cover: it pays only if the result lands in this one bucket. Outcomes above or below it (for example more hikes than the bucket) aren't covered unless you buy every bucket.");
+  }
   if ((j.side === "YES" ? c.yesAsk : c.noAsk) === null) gaps.push("No live price for this side, so it can't be costed.");
   return { ...j, fit, gaps: [...new Set(gaps)].slice(0, 6) };
 }
@@ -81,7 +84,7 @@ quote: copy ONE sentence verbatim from the market rules that defines the payout 
 export async function aiRate(w: Worry, cs: Candidate[], now = new Date()): Promise<FitJudgement[] | null> {
   if (!llmAvailable() || !cs.length) return null;
   try {
-    const list = cs.map((c, i) => `#${i} [${c.venue}] ${c.title}\ncloses: ${c.closeTime ?? "unknown"}\nrules: ${c.rules.slice(0, 700) || "(none given)"}`).join("\n\n");
+    const list = cs.map((c, i) => `#${i} [${c.venue}] ${c.title}\ncloses: ${c.closeTime ?? "unknown"}${c.sources.length ? `\nsettlement source: ${c.sources.join(", ")}` : ""}\nrules: ${c.rules.slice(0, 700) || "(none given)"}`).join("\n\n");
     const o = await geminiJson<{ ratings: Array<{ index: number; fit: Fit; side: "YES" | "NO"; covered: string; quote?: string | null; gaps: string[] }> }>("judge", SYSTEM,
       `Today: ${now.toISOString().slice(0, 10)}\nWorry: ${JSON.stringify(w.text)}${w.parsedBy === "ai" ? `\nParsed: ${JSON.stringify({ summary: w.summary, direction: w.direction, threshold: w.threshold, unit: w.unit, location: w.location, windowStart: w.windowStart, deadline: w.deadline })}` : ""}\n\nMarkets:\n${list}`,
       SCHEMA, 12000, process.env.HEDGE_JUDGE_THINKING || "minimal");
@@ -94,6 +97,8 @@ export async function aiRate(w: Worry, cs: Candidate[], now = new Date()): Promi
 export function finalize(w: Worry, cs: Candidate[], raw: FitJudgement[] | null, now = new Date()): FitJudgement[] {
   const base = raw ?? cs.map((c) => { const o = overlap(w, c); const fit: Fit = o >= 0.4 ? "loose" : "none"; // keyword overlap alone never earns a buyable rating
     return { marketId: c.marketId, fit, side: "YES" as const, covered: `Pays if the market's YES outcome happens: ${c.title}`, gaps: ["Rated by keyword overlap only (AI unavailable); read the rules before buying."], quote: null, by: "rules" as const }; });
-  return base.map((j, i) => { const c = cs[i]!; const k = codeChecks(w, c, j, now); return { ...k, quote: bestQuote(w, c, j.quote) }; });
+  return base.map((j, i) => { const c = cs[i]!; const k = codeChecks(w, c, j, now);
+    const covered = c.sources.length && !/settle|source/i.test(k.covered) ? `${k.covered.replace(/\.?$/, ".")} Settled using ${c.sources.join(", ")}.` : k.covered;
+    return { ...k, covered, quote: bestQuote(w, c, j.quote) }; });
 }
 export async function judge(w: Worry, cs: Candidate[], now = new Date()) { return finalize(w, cs, await aiRate(w, cs, now), now); }

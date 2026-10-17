@@ -33,7 +33,9 @@ export function createApp() {
   app.post("/v1/plan", async (c) => {
     const inp = parse(await c.req.json().catch(() => null)); if (typeof inp === "string") return c.json({ error: inp }, 400);
     if (!paidMode()) c.header("x-hedge-mode", "unpaid-dev");
-    try { return c.json(await plan(inp)); } catch (e: any) { return c.json({ error: String(e?.message ?? e) }, 502); }
+    // Paid mode: never charge for a keyword-only answer. A 503 makes the x402 middleware skip settlement.
+    if (paidMode() && !llmAvailable()) return c.json({ error: "Hedge's AI is unavailable right now; you were not charged. Try again shortly." }, 503);
+    try { const p = await plan(inp); if (paidMode() && p.aiDegraded) return c.json({ error: "Hedge's AI is over quota or timed out, so the plan would be keyword-only; you were not charged. Try again shortly.", headline: p.headline }, 503); return c.json(p); } catch (e: any) { return c.json({ error: String(e?.message ?? e) }, 502); }
   });
   app.post("/v1/preview", async (c) => {
     const b: any = await c.req.json().catch(() => null);
