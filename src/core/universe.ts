@@ -108,6 +108,7 @@ export async function polymarketSearch(q: string, ms = 2500): Promise<Candidate[
 export async function referenceCandidates(queries: string[], score: (c: Candidate) => number, cap = 24, ms = 2500): Promise<{ candidates: Candidate[]; warnings: string[] }> {
   const warnings: string[] = [];
   const rs = await Promise.allSettled(queries.slice(0, 4).map((q) => polymarketSearch(q, ms)));
+  rs.forEach((r, i) => console.log("[hedge] polymarket q=", JSON.stringify(queries[i]), r.status === "fulfilled" ? `${r.value.length} markets` : `failed: ${r.reason?.message ?? r.reason}`));
   const seen = new Map<string, Candidate>();
   rs.forEach((r, i) => { if (r.status === "rejected") warnings.push(`Polymarket search "${queries[i]}" failed: ${r.reason?.message ?? r.reason}`);
     else for (const c of r.value) if (!seen.has(c.marketId)) seen.set(c.marketId, c); });

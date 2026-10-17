@@ -18,7 +18,7 @@ export interface Plan {
   verdict: Verdict; headline: string; worry: Worry; amountAtRisk: number; maxCost: number | null;
   best: Option | null; buyableNow: Option | null; alternatives: Option[];
   execute: null | { tool: "world_buy_outcome"; marketId: string; outcomeMint: string | null; side: "YES" | "NO"; amountUsd: number; shares: number; note: string };
-  next: string[]; searched: { world: number; polymarket: number }; aiDegraded: boolean; warnings: string[]; disclaimer: string; ms: number;
+  next: string[]; searched: { world: number; polymarket: number; polymarketQueries?: string[] }; aiDegraded: boolean; warnings: string[]; disclaimer: string; ms: number;
 }
 
 const PER_VENUE = 6;
@@ -44,7 +44,8 @@ export async function preview(worry: string) {
 
 function decide(o: Option): string[] {
   const why: string[] = [];
-  if (FIT_ORDER[o.fit] < FIT_ORDER.close) why.push(`the closest market is only a ${o.fit} fit`);
+  if (o.fit === "none") why.push("no listed market pays when this happens");
+  if (o.ratedBy !== "ai" && FIT_ORDER[o.fit] < FIT_ORDER.close) why.push("it was matched by keywords only (AI unavailable), so it can't be recommended");
   if (!o.cost) why.push("the matching side has no live price");
   else if (o.cost.price < MIN_TICK) why.push(`it's priced at ${cents(o.cost.price)}, below 1¢, so the market thinks it almost can't happen: it's near-certain not to pay, or the price is stale`);
   else if (o.cost.price > 1 - MIN_TICK) why.push(`it's priced above 99¢, so it's no cover`);
@@ -62,7 +63,7 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   const text = input.worry.trim().slice(0, 600);
   const w = await understand(text, now); const tParse = Date.now() - t0;
   const base = { worry: w, amountAtRisk: amount, maxCost, disclaimer: "Estimates only. Prices move; fees are estimated (World shows the exact fee at buy). A hedge pays only if the market's rules resolve the way quoted, not whenever you feel the loss." };
-  if (w.isBet) return { ...base, verdict: "not_a_hedge", headline: "That's a bet, not a hedge. What loss are you protecting? If you already bought tickets, have a job, trip or savings that this outcome hurts, tell me the loss and the amount and I'll find cover for that (e.g. \"I paid $200 for Lakers playoff tickets and lose it if they're knocked out tonight\").", best: null, buyableNow: null, alternatives: [], execute: null,
+  if (w.isBet) return { ...base, verdict: "not_a_hedge", headline: "That's a bet, not a hedge. What loss are you protecting? If you already bought tickets, have a job, trip or savings that this outcome hurts, tell me the loss and the amount and I'll find cover for that (e.g. \"I booked a non-refundable $300 trip to the Lakers' next-round game, and lose it if they don't advance\").", best: null, buyableNow: null, alternatives: [], execute: null,
     next: ["Don't buy anything. Ask the user what loss they're protecting (tickets already bought, a job, a trip, savings) and how much; then call hedge_match with that worry."], searched: { world: 0, polymarket: 0 }, aiDegraded: w.parsedBy !== "ai", warnings, ms: Date.now() - t0 };
 
   // Overlap with the worry, plus a bonus for thresholds nearest the user's (so "BTC below 55k" finds the 55k/50k lines among 40+).
@@ -75,12 +76,15 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   const world = worldAll.map((c) => ({ c, o: score(c) })).sort((a, b) => b.o - a.o).slice(0, PER_VENUE).map((x) => x.c);
   // Always add a core-event query (first two key terms) so city-level wording still finds region-level markets.
   const core = w.keyTerms.slice(0, 2).join(" ");
-  const queries = [...new Set([...(w.searchQueries.length ? w.searchQueries : [w.subject]).slice(0, 3), ...(core ? [core] : [])])];
+  // Polymarket's search matches short topic words best ("bitcoin", "recession"); long phrases with numbers often return nothing.
+  const topic = (w.keyTerms.find((k) => k.length > 3 && !/^\d|^(below|above|drops?|falls?|crash|price|lose|loss|job)$/.test(k)) ?? "").trim();
+  const queries = [...new Set([...(w.searchQueries.length ? w.searchQueries : [w.subject]).slice(0, 2), ...(core ? [core] : []), ...(topic ? [topic] : [])].map((q) => q.toLowerCase()))].slice(0, 4);
   const poly = input.skipReference ? { candidates: [], warnings: [] as string[] } : await referenceCandidates(queries, score, PER_VENUE, Math.min(2200, Math.max(1200, BUDGET_MS - 2500 - (Date.now() - t0))));
   warnings.push(...poly.warnings);
+  if (!input.skipReference) console.log("[hedge] polymarket", JSON.stringify({ queries, hits: poly.candidates.length, top: poly.candidates.slice(0, 3).map((c) => c.title), warnings: poly.warnings }));
   if (!worldAll.length) warnings.push("No World markets were supplied, so nothing here is buyable through PayBox yet. Run world_search with the preview queries and pass the results as candidates.");
   const cs = [...world, ...poly.candidates];
-  const tPoly = Date.now() - t0; const raw = await aiRate(w, cs, now, Math.max(2000, BUDGET_MS - (Date.now() - t0)));
+  const tPoly = Date.now() - t0; const raw = await aiRate(w, cs, now, Math.max(1800, BUDGET_MS - 600 - (Date.now() - t0)));
   const js = finalize(w, cs, raw, now); timing = { parse: tParse, poly: tPoly, judge: Date.now() - t0 - tPoly, n: cs.length };
   const opts: Option[] = cs.map((c, i) => {
     const j = js[i]!; const side = j.side; const p = side === "YES" ? c.yesAsk : c.noAsk; const ow: string[] = [];
@@ -106,11 +110,15 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   const best = good[0] ?? null;
   const buyableNow = best && !best.buyableViaPayBox ? good.find((o) => o.buyableViaPayBox) ?? null : best;
   const cap1 = (t: string) => t[0]!.toUpperCase() + t.slice(1);
-  const share = (o: Option) => `covers ${usd(o.cost!.payout)} of your ${usd(amount)} (${Math.round(o.cost!.payout / amount * 1000) / 10}%).`;
+  const unverified = (o: Option) => o.warnings.some((x) => /^(Size not checked|Depth not checked)/.test(x));
+  const share = (o: Option) => unverified(o) ? `up to ${usd(o.cost!.payout)} of cover, size unverified${o.buyableViaPayBox ? " (run world_orderbook to confirm)" : ""}.`
+    : `covers ${usd(o.cost!.payout)} of your ${usd(amount)} (${Math.round(o.cost!.payout / amount * 1000) / 10}%).`;
+  // Loose fits are shown, but lead with what isn't covered.
+  const lead = (o: Option) => o.fit === "loose" ? `Loose fit, read the gaps first: ${o.whatsNotCovered.slice(0, 3).map((g) => g.replace(/\.+$/, "")).join("; ") || "it can fail to pay when your worry happens"}. ` : "";
   // Polymarket depth for the top reference option (one public CLOB call).
   const topRef = good.find((o) => !o.buyableViaPayBox);
   if (topRef?.cost) { const c = cs.find((x) => x.marketId === topRef.market.marketId); const tok = topRef.side === "YES" ? c?.tokenIds?.yes : c?.tokenIds?.no;
-    const d = tok && Date.now() - t0 < BUDGET_MS - 1300 ? await polymarketDepth(tok, topRef.cost.price) : null;
+    const left = BUDGET_MS + 1500 - (Date.now() - t0); const d = tok && left > 500 ? await polymarketDepth(tok, topRef.cost.price, Math.min(1200, left)) : null;
     if (d === null) topRef.warnings.push("Depth not checked on Polymarket; size at this price may be smaller.");
     else if (d < topRef.cost.shares && d > 0) { topRef.warnings.push(`Polymarket depth: only about ${Math.floor(d)} shares at this price, so ${usd(Math.floor(d))} of cover; more would cost more.`); topRef.cost = costToCover(topRef.cost.price, amount, maxCost, Math.floor(d)); } }
   const aiDegraded = w.parsedBy !== "ai" || js.some((j) => j.by !== "ai");
@@ -126,20 +134,21 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   if (!best) {
     verdict = "no_good_hedge";
     headline = opts[0] && opts[0].fit !== "none" ? `No good hedge: ${decide(opts[0]).join("; ")}.` : "No good hedge: no listed market pays when this happens.";
+    if (opts[0] && opts[0].fit !== "none" && opts[0].ratedBy === "ai") headline = `No good hedge: the nearest market ${decide(opts[0]).join("; ")}.`;
     if (!worldAll.length) { headline += ` World wasn't searched yet: run world_search ${JSON.stringify(w.searchQueries[0] ?? w.subject)} and pass the results.`; next.push(`World wasn't searched yet. Call world_search ${JSON.stringify(w.searchQueries[0] ?? w.subject)}, then world_get_events(ticker) for the top 1-2 hits, and pass them as candidates.`); }
     else next.push("Don't buy anything for this worry. Tell the user plainly there is no good hedge listed.");
   } else if (best.buyableViaPayBox) {
     verdict = "hedge";
-    headline = `${best.fit === "exact" ? "Good" : "Decent"} hedge: buy ${best.side} on World "${best.market.title}" for ${usd(best.cost!.cost)} → pays ${usd(best.cost!.payout)} if it happens (${best.fit} fit). ${cap1(share(best))}`;
+    headline = `${lead(best)}${best.fit === "exact" ? "Good" : best.fit === "close" ? "Decent" : "Partial"} hedge: buy ${best.side} on World "${best.market.title}" for ${usd(best.cost!.cost)} → pays ${usd(best.cost!.payout)} if it happens (${best.fit} fit). ${cap1(share(best))}`;
     buy(best);
   } else {
     verdict = "hedge_elsewhere";
-    headline = `Best protection is on Polymarket at ${cents(best.cost!.price)}: buy ${best.side} on "${best.market.title}" there (${best.market.url}). ${usd(best.cost!.cost)} ${share(best).replace(/\.$/, "")} (${best.fit} fit).`;
+    headline = `${lead(best)}Best protection is on Polymarket at ${cents(best.cost!.price)}: buy ${best.side} on "${best.market.title}" there (${best.market.url}). ${usd(best.cost!.cost)} ${share(best).replace(/\.$/, "")} (${best.fit} fit).`;
     if (buyableNow) { headline += ` Buyable now through PayBox: ${buyableNow.side} on World "${buyableNow.market.title}" for ${usd(buyableNow.cost!.cost)}, ${share(buyableNow)} (${buyableNow.fit} fit).`; buy(buyableNow); }
     else next.unshift(`Hedge can't buy on Polymarket. Give the user the link (${best.market.url}); nothing on World fits well enough to buy through PayBox.`);
   }
   return { ...base, verdict, headline, best, buyableNow: buyableNow && buyableNow !== best ? buyableNow : null, alternatives: opts.filter((o) => o !== best && o !== buyableNow).slice(0, 3),
-    execute, next, searched: { world: worldAll.length, polymarket: poly.candidates.length }, aiDegraded, warnings, ms: Date.now() - t0 };
+    execute, next, searched: { world: worldAll.length, polymarket: poly.candidates.length, polymarketQueries: input.skipReference ? [] : queries }, aiDegraded, warnings, ms: Date.now() - t0 };
 }
 
 /** Free tier: the best match and what it costs to cover. The paid plan adds sizing detail, the rules quote, gaps, alternatives and the buy instruction. */

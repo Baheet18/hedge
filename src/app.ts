@@ -17,6 +17,16 @@ function parse(b: any): PlanInput | string {
   return { worry: b.worry, amountAtRisk: a, maxCost: b.maxCost == null ? null : Number(b.maxCost), candidates: b.candidates ?? [] };
 }
 
+/** Mirror the v2 PAYMENT-REQUIRED header into the 402 JSON body, so clients that read the body (not just the header) see a complete challenge. */
+export const mirrorChallenge = async (c: any, next: () => Promise<void>) => {
+  await next();
+  if (c.res?.status !== 402) return;
+  const h = c.res.headers.get("payment-required"); if (!h) return;
+  try { const pr = JSON.parse(Buffer.from(h, "base64").toString("utf8"));
+    const headers = new Headers(c.res.headers); headers.set("content-type", "application/json"); headers.delete("content-length");
+    c.res = new Response(JSON.stringify(pr), { status: 402, headers }); } catch { /* keep original */ }
+};
+
 export function createApp() {
   const app = new Hono();
   app.get("/", (c) => c.json({
@@ -34,9 +44,12 @@ export function createApp() {
       ...(config.payToSolana ? [{ scheme: "exact", price: config.price, network: config.solanaNetwork, payTo: config.payToSolana, maxTimeoutSeconds: 600 }] : []),
       ...(config.payTo ? [{ scheme: "exact", price: config.price, network: config.network, payTo: config.payTo, maxTimeoutSeconds: 600 }] : []),
     ];
-    app.use(paymentMiddleware({ "POST /v1/plan": { accepts: accepts as any,
-      description: "Hedge plan: the market that pays if your worry happens, cost to cover, what is and isn't covered", mimeType: "application/json" } }, rs));
+    const route = { accepts: accepts as any,
+      description: "Hedge plan: the market that pays if your worry happens, cost to cover, what is and isn't covered", mimeType: "application/json" };
+    app.use("/v1/plan", mirrorChallenge);
+    app.use(paymentMiddleware({ "POST /v1/plan": route, "GET /v1/plan": route } as any, rs));
   }
+  app.get("/v1/plan", (c) => c.json({ error: "Use POST with {worry, amountAtRisk, candidates?}. You were not charged." }, 400));
   app.post("/v1/plan", async (c) => {
     const inp = parse(await c.req.json().catch(() => null)); if (typeof inp === "string") return c.json({ error: inp }, 400);
     if (!paidMode()) c.header("x-hedge-mode", "unpaid-dev");

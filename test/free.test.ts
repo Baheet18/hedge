@@ -123,10 +123,10 @@ test("Polymarket ranking prefers the threshold nearest the user's among many BTC
   } finally { restore(); }
 });
 
-test("no good hedge still shows a loose reference as closestNotRecommended (never a 'none' one)", () => withKey(async () => {
+test("loose fit is shown as the match, headline leads with the gaps; 'none' stays no good hedge", () => withKey(async () => {
   const restore = stubFetch({ poly: [], gemini: { parse: btcParse, judge: judgeAll("loose") } });
   try { const r: any = await freeMatch({ worry: "Bitcoin drops below $55k", amountAtRisk: 100, candidates: [btcEvent] }, NOW);
-    assert.equal(r.verdict, "no_good_hedge"); assert.equal(r.match, null); assert.equal(r.closestNotRecommended.fit, "loose"); assert.match(r.closestNotRecommended.why, /don't buy/); }
+    assert.equal(r.verdict, "hedge"); assert.equal(r.match.fit, "loose"); assert.match(r.headline, /^Loose fit, read the gaps first/); }
   finally { restore(); }
 }));
 
@@ -138,3 +138,45 @@ test("Polymarket depth caps the cover and the headline share", () => withKey(asy
     assert.ok(r.match, r.headline); assert.equal(r.match.payout, 95); assert.match(r.headline, /covers \$95.00 of your \$200.00 \(47.5%\)/); assert.match(r.match.warnings.join(" "), /depth/); }
   finally { globalThis.fetch = f; restore(); }
 }));
+
+test("World size unverified → headline says 'up to $X, size unverified', no percentage; orderbook in the candidate is used", () => withKey(async () => {
+  const ev = JSON.parse(JSON.stringify(btcEvent)); delete ev.markets[0].yesAskQty;
+  const restore = stubFetch({ poly: [], gemini: { parse: btcParse, judge } });
+  try {
+    const r: any = await freeMatch({ worry: "Bitcoin drops below $55k", amountAtRisk: 100, candidates: [ev] }, NOW);
+    assert.match(r.headline, /up to \$100.00 of cover, size unverified/i); assert.doesNotMatch(r.headline, /%\)/);
+    ev.markets[0].orderbook = { yes: { asks: [[0.126, 80]] } };
+    const r2: any = await freeMatch({ worry: "Bitcoin drops below $55k", amountAtRisk: 100, candidates: [ev] }, NOW);
+    assert.equal(r2.match.payout, 80); assert.match(r2.headline, /covers \$80.00 of your \$100.00 \(80%\)/i);
+  } finally { restore(); }
+}));
+
+test("timing: trip window lists 'pays before your trip'; no-deadline cover says 'Cover ends <date>'; any gap caps at close", async () => {
+  const { codeChecks } = await import("../src/core/fit.js"); const { rulesParse } = await import("../src/core/worry.js");
+  const c: any = { source: "reference", venue: "polymarket", marketId: "x", title: "Hurricane landfall in Texas by Nov 30?", rules: "NHC.", closeTime: "2026-12-01T04:59:00Z", yesAsk: 0.09, noAsk: 0.91, yesBid: null, noBid: null, yesMint: null, noMint: null, url: null, sources: [], askQty: { yes: null, no: null } };
+  const j = { marketId: "x", fit: "exact" as const, side: "YES" as const, covered: "", gaps: [], quote: null, by: "ai" as const };
+  const trip = codeChecks({ ...rulesParse("hurricane houston trip", NOW), windowStart: "2026-10-28", deadline: "2026-11-02" }, c, j, NOW);
+  assert.match(trip.gaps.join(" "), /before your window starts/); assert.equal(trip.fit, "close");
+  const open = codeChecks({ ...rulesParse("bitcoin below 55k", NOW), deadline: null, threshold: null }, { ...c, title: "Bitcoin below $55,000 in 2026?", closeTime: "2026-12-31T23:00:00Z" }, j, NOW);
+  assert.match(open.gaps.join(" "), /Cover ends 31 December 2026/); assert.equal(open.fit, "close");
+});
+
+test("402 challenge is mirrored into the JSON body", async () => {
+  const { mirrorChallenge } = await import("../src/app.js"); const { Hono } = await import("hono");
+  const pr = { x402Version: 2, resource: { url: "https://h/v1/plan" }, accepts: [{ scheme: "exact", network: "eip155:8453", amount: "10000" }] };
+  const app = new Hono(); app.use("*", mirrorChallenge); app.post("/x", (c) => { c.header("PAYMENT-REQUIRED", Buffer.from(JSON.stringify(pr)).toString("base64")); return c.json({}, 402); });
+  const r = await app.request("/x", { method: "POST" }); assert.equal(r.status, 402); assert.ok(r.headers.get("payment-required"));
+  assert.deepEqual(await r.json(), pr);
+});
+
+test("bet reply uses the non-refundable trip example", async () => {
+  const r: any = await freeMatch({ worry: "I think the Lakers win tonight, put $50 on it", amountAtRisk: 50 }, NOW);
+  assert.match(r.headline, /non-refundable .* trip .* if they don't advance/);
+});
+
+test("job loss vs recession market is loose (proxy gap first)", async () => {
+  const { codeChecks } = await import("../src/core/fit.js"); const { rulesParse } = await import("../src/core/worry.js");
+  const c: any = { source: "reference", venue: "polymarket", marketId: "r", title: "US recession by end of 2026?", rules: "Resolves Yes if NBER declares a recession.", closeTime: "2027-01-31T00:00:00Z", yesAsk: 0.08, noAsk: 0.92, yesBid: null, noBid: null, yesMint: null, noMint: null, url: null, sources: [], askQty: { yes: null, no: null } };
+  const r = codeChecks(rulesParse("I'm worried I lose my job in a US recession", NOW), c, { marketId: "r", fit: "close", side: "YES", covered: "", gaps: [], quote: null, by: "ai" }, NOW);
+  assert.equal(r.fit, "loose"); assert.match(r.gaps[0]!, /^Proxy/);
+});

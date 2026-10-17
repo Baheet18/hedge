@@ -6,6 +6,7 @@ export const FIT_ORDER: Record<Fit, number> = { exact: 3, close: 2, loose: 1, no
 const DOWN: Record<Fit, Fit> = { exact: "close", close: "loose", loose: "none", none: "none" };
 export const down = (f: Fit, n = 1): Fit => (n <= 0 ? f : down(DOWN[f], n - 1));
 const DIFF = /\b(closes before|ends before|after your|outside your|shorter|longer window|whole (state|country)|wider|narrower|area|region|statewide|county|city-level|definition|defined as|only (counts|pays|if)|doesn't count|does not count|not count|tropical storm|declar|officially)/i;
+const day = (d: Date) => d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
 export const sentences = (t: string) => {
   const raw = t.replace(/\s+/g, " ").split(/(?<=[^\d\s][.!?]|[a-z]{2,}\d[.!?])\s+(?=[A-Z(“"])/).map((s) => s.trim()).filter(Boolean);
@@ -54,9 +55,9 @@ export function codeChecks(w: Worry, c: Candidate, j: FitJudgement, now = new Da
   }
   if (w.deadline && close) {
     const dl = new Date(`${w.deadline}T23:59:59Z`); const days = (close.getTime() - dl.getTime()) / 86400e3;
-    if (days < -7) { gaps.unshift(`Timing: the market closes ${close.toISOString().slice(0, 10)}, before your worry window ends (${w.deadline}). Anything after that isn't covered.`); fit = down(fit); }
+    if (days < -7) { gaps.unshift(`Timing: cover ends ${day(close)}, before your worry window ends (${day(dl)}). Anything after that isn't covered.`); fit = down(fit); }
     else if (days < -1) gaps.push(`Timing: the market closes ${close.toISOString().slice(0, 10)}, a few days before ${w.deadline}. Check that your event is decided by then.`);
-    else if (days > 45) gaps.push(`Timing: the market runs to ${close.toISOString().slice(0, 10)}, well past your ${w.deadline} window. It can pay for an event after your exposure ends, so you are paying for extra time you don't need.`);
+    else if (days > 45) gaps.push(`Timing: the market runs to ${day(close)}, well past your window ending ${day(dl)}. It can pay for an event after your exposure ends, so you are paying for extra time you don't need.`);
   }
   if (w.threshold && (w.direction === "above" || w.direction === "below") && j.side === "YES") {
     const ns = titleNumbers(c.title).filter((n) => n / w.threshold! > 0.2 && n / w.threshold! < 5);
@@ -78,8 +79,18 @@ export function codeChecks(w: Worry, c: Candidate, j: FitJudgement, now = new Da
   if (/\b(gdp|nber|bureau of economic analysis|bls|advance estimate|initial release|first estimate|published|data release|announced by)\b/i.test(c.rules) && close) {
     const ref = w.deadline ? new Date(`${w.deadline}T23:59:59Z`) : now;
     if (close.getTime() - ref.getTime() > 30 * 864e5 || /\b(q4|fourth quarter)\b/i.test(`${c.title} ${c.rules}`))
-      gaps.push(`Publication lag: it settles on official data published later (market closes ${close.toISOString().slice(0, 10)}), so even if it happens you may wait months to be paid.`);
+      gaps.push(`Publication lag: it settles on official data published later (market closes ${day(close)}), so even if it happens you may wait months to be paid.`);
   }
+  // Trip/window worries: a market open before the user's window pays for events they aren't exposed to.
+  if (w.windowStart && close) { const ws = new Date(`${w.windowStart}T00:00:00Z`);
+    if (ws.getTime() - now.getTime() > 2 * 864e5) gaps.push(`Timing: it also pays for an event between now and ${day(ws)}, before your window starts, when you aren't exposed; you pay for that time too.`); }
+  if (!w.deadline && close && close.getTime() > now.getTime()) gaps.push(`Cover ends ${day(close)}; anything after that isn't covered.`);
+  // Personal loss (job, income, sales) vs a macro market: the macro event can happen without your loss, and vice versa.
+  if (/\b(my job|lose (my )?job|laid off|layoff|fired|my (income|salary|sales|business|customers))\b/i.test(w.text) && /\b(recession|gdp|unemployment rate|nber|jobs report|payrolls)\b/i.test(`${c.title} ${c.rules.slice(0, 400)}`) && FIT_ORDER[fit] > FIT_ORDER.loose) {
+    fit = "loose"; gaps.unshift("Proxy: this pays on a macro event, not on you losing your job. A recession can happen while you keep your job, and you can lose it without one.");
+  }
+  // Any listed gap caps the fit at close.
+  if (fit === "exact" && gaps.length) fit = "close";
   if ((j.side === "YES" ? c.yesAsk : c.noAsk) === null) gaps.push("No live price for this side, so it can't be costed.");
   return { ...j, fit, gaps: [...new Set(gaps)].slice(0, 6) };
 }

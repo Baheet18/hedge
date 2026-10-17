@@ -91,11 +91,11 @@ test("Knicks bet → that's a bet, not a hedge", async () => {
   } finally { restore(); }
 });
 
-test("Fed hikes twice vs 'exactly 2 hikes' bucket → loose, no good hedge", () => withKey(async () => {
+test("Fed hikes twice vs 'exactly 2 hikes' bucket → loose, shown with gaps first", () => withKey(async () => {
   const restore = stubFetch({ poly: [], gemini: { parse: { summary: "The Fed hikes at least twice in 2026", category: "rates", subject: "fed rate hikes", direction: "happens", threshold: 2, unit: "hikes", location: null, deadline: "2026-12-31", windowStart: null, searchQueries: ["fed hike"], keyTerms: ["fed", "hike", "fomc"], isBet: false },
     judge: () => ({ ratings: [{ index: 0, fit: "close", side: "YES", covered: "Pays on exactly two hikes.", quote: null, gaps: [] }] }) } });
   try { const p = await plan({ worry: "If the Fed hikes twice this year my variable loan gets expensive.", amountAtRisk: 500, candidates: [fedExactly2] }, NOW);
-    assert.equal(p.verdict, "no_good_hedge", p.headline); assert.equal(p.alternatives[0]!.fit, "loose"); assert.match(p.alternatives[0]!.whatsNotCovered.join(" "), /Partial cover/);
+    assert.equal(p.verdict, "hedge", p.headline); assert.equal(p.best!.fit, "loose"); assert.match(p.headline, /^Loose fit, read the gaps first: .*Partial cover/); assert.match(p.headline, /Partial hedge/);
   } finally { restore(); }
 }));
 
@@ -146,7 +146,7 @@ test("partial-cover gap text is generic", () => withKey(async () => {
   const restore = stubFetch({ poly: [], gemini: { parse: { summary: "BTC between 50k and 60k? no", category: "crypto", subject: "bitcoin", direction: "below", threshold: 74000, unit: null, location: null, deadline: "2026-12-31", windowStart: null, searchQueries: ["btc"], keyTerms: ["bitcoin"], isBet: false },
     judge: () => ({ ratings: [{ index: 0, fit: "exact", side: "YES", covered: "x", quote: null, gaps: [] }] }) } });
   try { const p = await plan({ worry: "My BTC savings get hurt if bitcoin drops under 74k", amountAtRisk: 100, candidates: [{ ticker: "WXBTC-R", title: "Bitcoin between $70,000 and $74,000 on Dec 31?", rules: "Resolves Yes if the close is in range.", yesAsk: 0.1, noAsk: 0.91, closeTime: "2027-01-01T00:00:00Z" }] }, NOW);
-    const g = p.alternatives[0]!.whatsNotCovered.join(" "); assert.match(g, /Results outside this bucket aren't covered/); assert.doesNotMatch(g, /hikes/);
+    const g = (p.best ?? p.alternatives[0])!.whatsNotCovered.join(" "); assert.match(g, /Results outside this bucket aren't covered/); assert.doesNotMatch(g, /hikes/);
   } finally { restore(); }
 }));
 
