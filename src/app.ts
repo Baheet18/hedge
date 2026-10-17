@@ -2,10 +2,11 @@ import { Hono } from "hono";
 import { paymentMiddleware, x402ResourceServer } from "@x402/hono";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
+import { ExactSvmScheme } from "@x402/svm/exact/server";
 import { createFacilitatorConfig } from "@coinbase/x402";
-import { plan, preview, type PlanInput } from "./core/plan.js";
+import { plan, preview, freeMatch, type PlanInput } from "./core/plan.js";
 import { llmAvailable } from "./core/llm.js";
-import { config, paidMode } from "./config.js";
+import { config, paidMode, networks } from "./config.js";
 
 function parse(b: any): PlanInput | string {
   if (!b || typeof b !== "object") return "Send JSON: {worry, amountAtRisk, maxCost?, candidates?}.";
@@ -20,14 +21,20 @@ export function createApp() {
   const app = new Hono();
   app.get("/", (c) => c.json({
     product: "Hedge", tagline: "Tell it what you're worried about. It finds the market that pays you if it happens, or tells you there isn't one.",
-    endpoints: { "POST /v1/plan": `paid (${config.price} USDC via x402${paidMode() ? "" : ", currently in unpaid dev mode"}): {worry, amountAtRisk, maxCost?, candidates?[World markets]}`, "POST /v1/preview": "free: {worry} → parsed worry + world_search queries", "GET /health": "status" },
+    endpoints: { "POST /v1/plan": `paid (${config.price} USDC via x402${paidMode() ? "" : ", currently in unpaid dev mode"}): {worry, amountAtRisk, maxCost?, candidates?[World markets]}`, "POST /v1/match": "free: {worry, amountAtRisk?, candidates?} → best match + price + cost to cover (no candidates → world_search queries)", "POST /v1/preview": "free: {worry} → parsed worry + world_search queries", "GET /health": "status" },
     universe: "Venue-agnostic: World markets supplied by the agent (buyable through PayBox) plus Polymarket, searched on every request (link only).",
   }));
-  app.get("/health", (c) => c.json({ ok: true, paid: paidMode(), network: config.network, price: config.price, ai: llmAvailable() }));
+  app.get("/health", (c) => c.json({ ok: true, paid: paidMode(), network: config.network, networks: networks(), price: config.price, ai: llmAvailable() }));
   if (paidMode()) {
     const fc = config.facilitatorUrl ? new HTTPFacilitatorClient({ url: config.facilitatorUrl }) : new HTTPFacilitatorClient(createFacilitatorConfig(config.cdpKeyId, config.cdpKeySecret));
-    const rs = new x402ResourceServer(fc).register(config.network, new ExactEvmScheme());
-    app.use(paymentMiddleware({ "POST /v1/plan": { accepts: [{ scheme: "exact", price: config.price, network: config.network, payTo: config.payTo, maxTimeoutSeconds: 120 }],
+    const rs = new x402ResourceServer(fc);
+    if (config.payTo) rs.register(config.network, new ExactEvmScheme());
+    if (config.payToSolana) rs.register(config.solanaNetwork, new ExactSvmScheme());
+    const accepts = [
+      ...(config.payToSolana ? [{ scheme: "exact", price: config.price, network: config.solanaNetwork, payTo: config.payToSolana, maxTimeoutSeconds: 120 }] : []),
+      ...(config.payTo ? [{ scheme: "exact", price: config.price, network: config.network, payTo: config.payTo, maxTimeoutSeconds: 120 }] : []),
+    ];
+    app.use(paymentMiddleware({ "POST /v1/plan": { accepts: accepts as any,
       description: "Hedge plan: the market that pays if your worry happens, cost to cover, what is and isn't covered", mimeType: "application/json" } }, rs));
   }
   app.post("/v1/plan", async (c) => {
@@ -36,6 +43,11 @@ export function createApp() {
     // Paid mode: never charge for a keyword-only answer. A 503 makes the x402 middleware skip settlement.
     if (paidMode() && !llmAvailable()) return c.json({ error: "Hedge's AI is unavailable right now; you were not charged. Try again shortly." }, 503);
     try { const p = await plan(inp); if (paidMode() && p.aiDegraded) return c.json({ error: "Hedge's AI is over quota or timed out, so the plan would be keyword-only; you were not charged. Try again shortly.", headline: p.headline }, 503); return c.json(p); } catch (e: any) { return c.json({ error: String(e?.message ?? e) }, 502); }
+  });
+  app.post("/v1/match", async (c) => {
+    const b: any = await c.req.json().catch(() => null);
+    const inp = parse(b && typeof b === "object" && b.amountAtRisk == null ? { ...b, amountAtRisk: 100 } : b); if (typeof inp === "string") return c.json({ error: inp }, 400);
+    try { return c.json(await freeMatch(inp)); } catch (e: any) { return c.json({ error: String(e?.message ?? e) }, 502); }
   });
   app.post("/v1/preview", async (c) => {
     const b: any = await c.req.json().catch(() => null);

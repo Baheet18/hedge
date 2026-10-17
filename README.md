@@ -35,14 +35,14 @@ sequenceDiagram
   participant S as Hedge service (Vercel)
   participant W as World plugin (Solana)
   U->>A: "Paid in naira; worried USD/NGN passes 2,000 by Dec. $500 at risk"
-  A->>H: hedge_preview(worry) (free)
+  A->>H: hedge_match(worry, amountAtRisk, candidates) (free: best match + cost)
   H->>S: POST /v1/preview
   S-->>A: parsed event + world_search queries
   A->>W: world_search, then world_get_events / world_get_markets (rules), world_market_prices, world_orderbook
   W-->>A: candidate markets (rules, asks, size, YES/NO mints)
   A->>H: hedge_plan(worry, 500, maxCost, candidates)
-  H-->>A: x402 proposal (0.10 USDC, Base)
-  A->>U: approve 0.10 USDC?
+  H-->>A: x402 proposal (0.01 USDC, Solana if enabled, else Base)
+  A->>U: approve 0.01 USDC?
   A->>S: POST /v1/plan (paid by PayBox)
   S->>S: also search Polymarket; rank all by fit
   S-->>A: plan: market, side, cost, covered/not covered, fit, world_buy_outcome args (or Polymarket link)
@@ -81,7 +81,8 @@ The World market in the first row is World-format input shaped like `world_get_e
 ## API
 
 - `POST /v1/preview` (free): `{ worry }` → parsed worry + `worldSearch` queries
-- `POST /v1/plan` (x402, $0.10 USDC on Base): `{ worry, amountAtRisk, maxCost?, candidates? }` → plan
+- `POST /v1/match` (free): `{ worry, amountAtRisk?, candidates? }` → best match, side, price, cost to cover
+- `POST /v1/plan` (x402, $0.01 USDC on Solana and/or Base): `{ worry, amountAtRisk, maxCost?, candidates? }` → plan
 - `GET /health`
 
 World candidate objects are passed as World's tools return them. Hedge reads `id/marketId/ticker`, `title/question`, `rules/rulesPrimary/description`, `closeTime/expirationTime/endDate`, `yesAsk/noAsk` (probability, cents or 6-dp atomic), and `yesMint/noMint` (or World's `accounts` map).
@@ -96,6 +97,6 @@ GEMINI_API_KEY=... pnpm worries   # 10 real worries end to end
 cd plugin && pnpm install --frozen-lockfile && pnpm test   # PayBox validation → dist/plugin.mjs
 ```
 
-Environment: `GEMINI_API_KEY`; for paid mode `HEDGE_PAY_TO` (Base USDC address) plus a facilitator: `X402_FACILITATOR_URL` (production uses the keyless PayAI facilitator, `https://facilitator.payai.network`, which supports x402 v2 `exact` on Base mainnet) or `CDP_API_KEY_ID`/`CDP_API_KEY_SECRET` for Coinbase's. Without them the service runs unpaid (`x-hedge-mode: unpaid-dev`). Optional: `HEDGE_PRICE` (default `$0.10`), `HEDGE_FEE_RATE`, `HEDGE_MAX_PRICE` (0.7).
+Environment: `GEMINI_API_KEY`; for paid mode `HEDGE_PAY_TO` (Base USDC address) and/or `HEDGE_PAY_TO_SOLANA` (Solana USDC address) plus a facilitator: `X402_FACILITATOR_URL` (production uses the keyless PayAI facilitator, `https://facilitator.payai.network`, which supports x402 v2 `exact` on Base mainnet) or `CDP_API_KEY_ID`/`CDP_API_KEY_SECRET` for Coinbase's. Without them the service runs unpaid (`x-hedge-mode: unpaid-dev`). Optional: `HEDGE_PRICE` (default `$0.01`), `HEDGE_FEE_RATE`, `HEDGE_MAX_PRICE` (0.7).
 
 The plugin reads `HEDGE_URL` (default `https://hedge-paybox.vercel.app`). Allow that host in the PayBox portal.

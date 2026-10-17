@@ -6,7 +6,7 @@ import { normalizeWorldAll, referenceCandidates } from "./universe.js";
 import { understand } from "./worry.js";
 import type { Candidate, Fit, Worry } from "./types.js";
 
-export interface PlanInput { worry: string; amountAtRisk: number; maxCost?: number | null; candidates?: unknown[] }
+export interface PlanInput { worry: string; amountAtRisk: number; maxCost?: number | null; candidates?: unknown[]; skipReference?: boolean }
 export interface Option {
   market: { source: Candidate["source"]; venue: string; marketId: string; title: string; closeTime: string | null; url: string | null; settlementSources: string[] };
   buyableViaPayBox: boolean;
@@ -66,7 +66,7 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   // Always add a core-event query (first two key terms) so city-level wording still finds region-level markets.
   const core = w.keyTerms.slice(0, 2).join(" ");
   const queries = [...new Set([...(w.searchQueries.length ? w.searchQueries : [w.subject]).slice(0, 3), ...(core ? [core] : [])])];
-  const poly = await referenceCandidates(queries, score, PER_VENUE);
+  const poly = input.skipReference ? { candidates: [], warnings: [] as string[] } : await referenceCandidates(queries, score, PER_VENUE);
   warnings.push(...poly.warnings);
   if (!worldAll.length) warnings.push("No World markets were supplied, so nothing here is buyable through PayBox yet. Run world_search with the preview queries and pass the results as candidates.");
   const cs = [...world, ...poly.candidates];
@@ -117,4 +117,24 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   }
   return { ...base, verdict, headline, best, buyableNow: buyableNow && buyableNow !== best ? buyableNow : null, alternatives: opts.filter((o) => o !== best && o !== buyableNow).slice(0, 3),
     execute, next, searched: { world: worldAll.length, polymarket: poly.candidates.length }, aiDegraded, warnings, ms: Date.now() - t0 };
+}
+
+/** Free tier: the best match and what it costs to cover. The paid plan adds sizing detail, the rules quote, gaps, alternatives and the buy instruction. */
+export async function freeMatch(input: PlanInput, now = new Date()) {
+  // Free tier with World candidates skips the Polymarket search to stay well inside PayBox's 10s call limit.
+  const p = await plan({ ...input, skipReference: !!input.candidates?.length }, now);
+  const o = p.buyableNow ?? p.best ?? null;
+  const show = (x: Option | null) => x && { venue: x.market.venue, marketId: x.market.marketId, title: x.market.title, side: x.side, fit: x.fit, buyableViaPayBox: x.buyableViaPayBox,
+    price: x.cost?.price ?? null, costToCover: x.cost?.cost ?? null, payout: x.cost?.payout ?? null, closeTime: x.market.closeTime, url: x.market.url };
+  const noWorld = !(input.candidates?.length);
+  const next: string[] = [];
+  if (p.verdict === "not_a_hedge") next.push("That's a bet, not a hedge. Don't call hedge_plan.");
+  else {
+    if (noWorld && !p.worry.isBet) next.push(`To find buyable World markets: call world_search once with ${JSON.stringify(p.worry.searchQueries[0] ?? p.worry.subject)}, then world_get_events(ticker) for the top 1-2 event tickers, and pass those results as candidates to hedge_match (free) or straight to hedge_plan.`);
+    if (o) next.push(`Show the user this match. For the full plan (exact shares, rules quote, what isn't covered, size available at the ask, alternatives and the world_buy_outcome call), call hedge_plan with the same worry, amountAtRisk and candidates (0.01 USDC).`);
+    else next.push("Tell the user plainly there's no good hedge listed for this worry. Don't call hedge_plan unless they supply other markets.");
+  }
+  return { tier: "free", verdict: p.verdict, headline: p.headline, worry: { summary: p.worry.summary, category: p.worry.category, threshold: p.worry.threshold, deadline: p.worry.deadline, location: p.worry.location },
+    amountAtRisk: p.amountAtRisk, match: show(o), polymarketReference: p.best && p.best !== o ? show(p.best) : null,
+    worldSearch: noWorld ? p.worry.searchQueries : [], next, searched: p.searched, aiDegraded: p.aiDegraded, disclaimer: p.disclaimer, ms: p.ms };
 }
