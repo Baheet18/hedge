@@ -33,6 +33,31 @@ const BUDGET_MS = Number(process.env.HEDGE_BUDGET_MS ?? 7000);
 const usd = (n: number) => `$${n.toFixed(2)}`;
 const cents = (p: number) => `${Math.round(p * 1000) / 10}¢`;
 
+/** Fixed market-style queries for topics Polymarket words its own way (e.g. Fed meetings are "Fed decision in October"). */
+export function topicQueries(text: string): string[] {
+  if (FED.test(text)) return ["fed decision", "fomc"];
+  return [];
+}
+const FED = /\b(fed|fomc|federal reserve|rate (cut|hike)s?|interest rates?|cut rates|raise rates|powell)\b/i;
+const MONTH_NAMES = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+/** Score bonus so the right Fed meeting/outcome ranks first: next-meeting worries favour the nearest meeting; "no cut"/"hold" worries favour the "no change" outcome. */
+export function topicBoost(text: string, c: Candidate, now = new Date()): number {
+  if (!FED.test(text)) return 0;
+  const t = text.toLowerCase(); const title = c.title.toLowerCase();
+  if (!/\bfed\b|fomc|federal reserve|interest rate/.test(title)) return 0;
+  if (/dissent|say |mention|hike-|pause-/.test(title)) return 0.05;
+  let b = 0.3;
+  const named = MONTH_NAMES.find((m) => t.includes(m));
+  if (named) { if (title.includes(named)) b += 0.4; }
+  else if (/\bnext (fed |fomc )?(meeting|decision)|this (meeting|month)|\bnext\b/.test(t) && c.closeTime) {
+    const days = (new Date(c.closeTime).getTime() - now.getTime()) / 864e5; if (days > 0 && days < 50 && /meeting|decision/.test(title)) b += 0.4;
+  }
+  const noCut = /\b(doesn'?t|does not|don'?t|won'?t|will not|no|fails? to|not) (cut|lower)|\bhold|\bpause|no change|keeps? rates/.test(t);
+  if (noCut && /no change/.test(title)) b += 0.3;
+  if (/\b(cuts?|lowers?) rates?\b/.test(t) && !noCut && /decrease|cut/.test(title)) b += 0.2;
+  return b;
+}
+
 export async function preview(worry: string) {
   const w = await understand(worry);
   if (w.isBet) return { worry: w, worldSearch: [], next: ["That's a bet, not a hedge. Hedge only finds cover for a loss the user would suffer; don't run hedge_plan for this."] };
@@ -69,7 +94,8 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   // Overlap with the worry, plus a bonus for thresholds nearest the user's (so "BTC below 55k" finds the 55k/50k lines among 40+).
   const near = (c: Candidate) => { if (!w.threshold) return 0; const ns = titleNumbers(c.title).filter((n) => n / w.threshold! > 0.2 && n / w.threshold! < 5);
     return ns.length ? Math.max(0, 0.5 - Math.min(...ns.map((n) => Math.abs(n - w.threshold!) / w.threshold!))) : 0; };
-  const score = (c: Candidate) => { const o = overlap(w, c); return o > 0 ? o + near(c) : 0; };
+  const topical = topicQueries(w.text);
+  const score = (c: Candidate) => { const o = overlap(w, c) + topicBoost(w.text, c, now); return o > 0 ? o + near(c) : 0; };
   const worldAll = (input.candidates ?? []).flatMap(normalizeWorldAll);
   if ((input.candidates?.length ?? 0) && !worldAll.length) warnings.push("None of the World candidates had an id and title.");
   if (worldAll.some((c) => !c.rules)) warnings.push("Some World candidates had no rules: call world_get_events / world_get_markets for them, or they can't rate above loose.");
@@ -78,7 +104,7 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   const core = w.keyTerms.slice(0, 2).join(" ");
   // Polymarket's search matches short topic words best ("bitcoin", "recession"); long phrases with numbers often return nothing.
   const topic = (w.keyTerms.find((k) => k.length > 3 && !/^\d|^(below|above|drops?|falls?|crash|price|lose|loss|job)$/.test(k)) ?? "").trim();
-  const queries = [...new Set([...(w.searchQueries.length ? w.searchQueries : [w.subject]).slice(0, 2), ...(core ? [core] : []), ...(topic ? [topic] : [])].map((q) => q.toLowerCase()))].slice(0, 4);
+  const queries = [...new Set([...topical, ...(w.searchQueries.length ? w.searchQueries : [w.subject]).slice(0, 2), ...(core ? [core] : []), ...(topic ? [topic] : [])].map((q) => q.toLowerCase()))].slice(0, 4);
   const poly = input.skipReference ? { candidates: [], warnings: [] as string[] } : await referenceCandidates(queries, score, PER_VENUE, Math.min(2200, Math.max(1200, BUDGET_MS - 2500 - (Date.now() - t0))));
   warnings.push(...poly.warnings);
   if (!input.skipReference) console.log("[hedge] polymarket", JSON.stringify({ queries, hits: poly.candidates.length, top: poly.candidates.slice(0, 3).map((c) => c.title), warnings: poly.warnings }));

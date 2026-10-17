@@ -50,6 +50,8 @@ export function cleanGaps(w: Worry, c: Candidate, gaps: string[]): string[] {
     .filter((g) => g.length >= 12 && g.length <= 160)
     .filter((g) => !(sameThreshold && /\b(threshold|price level|strike|price target)\b/i.test(g)))
     .filter((g) => !(!w.deadline && !w.windowStart && /\b(extends?|longer|wider) (the )?(time )?window\b|\bthrough the end of\b/i.test(g)))
+    .filter((g) => !(!w.deadline && !w.windowStart && !/\b(month|week|year|quarter|season|through|until|by (the )?end)\b/i.test(w.text) && /\b(single|one|a) (day|date)\b.*\b(whole|entire|full) (month|week|year|period)\b/i.test(g)))
+    .filter((g) => !(!w.deadline && /\b(closes|ends|expires|resolves) (on|in)\b|\bonly (weeks|days) away\b/i.test(g) && /\btim(e|ing)|clos|date\b/i.test(g)))
     .filter((g) => !/\b(but|however) (it )?(matches|covers|is the same)\b|\bunspecified\b/i.test(g))
     .map((g) => (/[.!?]$/.test(g) ? g : `${g}.`));
 }
@@ -63,7 +65,7 @@ export function codeChecks(w: Worry, c: Candidate, j: FitJudgement, now = new Da
     const hrs = (close.getTime() - now.getTime()) / 36e5;
     const cap = (g: string) => { gaps.unshift(g); if (FIT_ORDER[fit] > FIT_ORDER.loose) fit = "loose"; };
     if (hrs < 48) cap(`Timing: this market resolves ${close.toISOString().slice(0, 16).replace("T", " ")} UTC, so it only covers the next ${Math.max(1, Math.round(hrs))} hours, not your whole worry.`);
-    else if (!w.deadline && hrs < 30 * 24) cap(`Timing: it closes ${close.toISOString().slice(0, 10)}, only weeks away. Your worry has no end date, so anything after that isn't covered.`);
+    else if (!w.deadline && hrs < 30 * 24) cap(`Timing: it closes ${day(close)}, only ${hrs < 14 * 24 ? `${Math.max(2, Math.floor(hrs / 24))} days` : "weeks"} away. Your worry has no end date, so anything after that isn't covered.`);
   }
   if (w.deadline && close) {
     const dl = new Date(`${w.deadline}T23:59:59Z`); const days = (close.getTime() - dl.getTime()) / 86400e3;
@@ -96,7 +98,7 @@ export function codeChecks(w: Worry, c: Candidate, j: FitJudgement, now = new Da
   // Trip/window worries: a market open before the user's window pays for events they aren't exposed to.
   if (w.windowStart && close) { const ws = new Date(`${w.windowStart}T00:00:00Z`);
     if (ws.getTime() - now.getTime() > 2 * 864e5) gaps.push(`Timing: it also pays for an event between now and ${day(ws)}, before your window starts, when you aren't exposed; you pay for that time too.`); }
-  if (!w.deadline && close && close.getTime() > now.getTime()) gaps.push(`Cover ends ${day(close)}; anything after that isn't covered.`);
+  if (!w.deadline && close && close.getTime() > now.getTime() && !gaps.some((g) => /^Timing:/.test(g))) gaps.push(`Cover ends ${day(close)}; anything after that isn't covered.`);
   // Personal loss (job, income, sales) vs a macro market: the macro event can happen without your loss, and vice versa.
   if (/\b(my job|lose (my )?job|laid off|layoff|fired|my (income|salary|sales|business|customers))\b/i.test(w.text) && /\b(recession|gdp|unemployment rate|nber|jobs report|payrolls)\b/i.test(`${c.title} ${c.rules.slice(0, 400)}`) && FIT_ORDER[fit] > FIT_ORDER.loose) {
     fit = "loose"; gaps.unshift("Proxy: this pays on a macro event, not on you losing your job. A recession can happen while you keep your job, and you can lose it without one.");
