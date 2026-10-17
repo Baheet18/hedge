@@ -24,6 +24,10 @@ export const mirrorChallenge = async (c: any, next: () => Promise<void>) => {
   if (c.res?.status !== 402) return;
   const h = c.res.headers.get("payment-required"); if (!h) return;
   try { const pr = JSON.parse(Buffer.from(h, "base64").toString("utf8"));
+    const sig = c.req.header("payment-signature"), xp = c.req.header("x-payment");
+    if (sig || xp) { let net = "?", ver = "?", from = "?";
+      try { const pl = JSON.parse(Buffer.from(sig || xp, "base64").toString("utf8")); ver = pl.x402Version; net = pl.accepted?.network ?? pl.network; from = pl.payload?.authorization?.from ?? "(svm)"; } catch { net = "undecodable"; }
+      console.warn("[hedge-x402] proof rejected", JSON.stringify({ header: sig ? "PAYMENT-SIGNATURE" : "X-PAYMENT", ver, net, from, sigLen: (sig || xp).length, error: pr.error ?? null, method: c.req.method })); }
     const headers = new Headers(c.res.headers); headers.set("content-type", "application/json"); headers.delete("content-length");
     c.res = new Response(JSON.stringify(pr), { status: 402, headers }); } catch { /* keep original */ }
 };
