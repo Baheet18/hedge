@@ -1,0 +1,3 @@
+allowBuilds:
+  '@coinbase/x402': false
+  esbuild: false

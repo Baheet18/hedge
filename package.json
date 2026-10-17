@@ -1,0 +1,28 @@
+{
+  "name": "hedge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx src/local.ts",
+    "worries": "tsx scripts/worries.ts",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@coinbase/x402": "2.1.0",
+    "@hono/node-server": "^2.1.5",
+    "@x402/core": "2.28.0",
+    "@x402/evm": "2.28.0",
+    "@x402/hono": "2.28.0",
+    "hono": "^4.13.13"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}

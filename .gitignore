@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.*
+!.env.example
+.vercel/
+plugin/node_modules/
+scripts/last-run.json
+.vercel
+.env*
