@@ -70,11 +70,17 @@ export function fedNextMeeting(text: string, now = new Date()): string | null {
   if (!/\b(fed|fomc|federal reserve)\b/i.test(text) || !/\bnext (fed |fomc )?(meeting|decision)\b/i.test(text)) return null;
   const today = now.toISOString().slice(0, 10); return FOMC.find((d) => d >= today) ?? null;
 }
-const withFed = (w: Worry, now: Date): Worry => { const d = fedNextMeeting(w.text, now); return d ? { ...w, deadline: d, category: "rates" } : w; };
+/** "this month" with no date: the last day of the current month. */
+export function thisMonthDeadline(text: string, now = new Date()): string | null {
+  if (!/\bthis month\b/i.test(text)) return null;
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).toISOString().slice(0, 10);
+}
+const withFed = (w: Worry, now: Date): Worry => { const d = fedNextMeeting(w.text, now); if (d) return { ...w, deadline: d, category: "rates" };
+  const m = thisMonthDeadline(w.text, now); return m && (!w.deadline || w.deadline > m) ? { ...w, deadline: m } : w; };
 
 const parseCache = new Map<string, { at: number; w: Worry }>();
 export async function understand(text: string, now = new Date()): Promise<Worry> {
-  const rx = regexParse(text, now); if (rx) return rx;
+  const rx = regexParse(text, now); if (rx) return withFed(rx, now);
   if (!llmAvailable()) return withFed(rulesParse(text, now), now);
   const key = text.toLowerCase().replace(/\s+/g, " ").trim(); const hit = parseCache.get(key);
   if (hit && process.env.HEDGE_NO_CACHE !== "1" && Date.now() - hit.at < 6 * 36e5) return withFed({ ...hit.w, text }, now);

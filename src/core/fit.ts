@@ -78,7 +78,11 @@ export function codeChecks(w: Worry, c: Candidate, j: FitJudgement, now = new Da
     if (ns.length === 1) { const m = ns[0]!;
       const worse = w.direction === "above" ? m > w.threshold * 1.005 : m < w.threshold * 0.995;
       const better = w.direction === "above" ? m < w.threshold * 0.995 : m > w.threshold * 1.005;
-      if (worse) { gaps.unshift(`Threshold: it pays only past ${m.toLocaleString("en-US")}, but your worry starts at ${w.threshold.toLocaleString("en-US")}. A move between the two isn't covered.`); fit = down(fit, Math.abs(m - w.threshold) / w.threshold > 0.1 ? 2 : 1); }
+      if (worse) { const far = Math.abs(m - w.threshold) / w.threshold; const $ = /\$/.test(`${c.title} ${w.text}`) ? "$" : "";
+        gaps.unshift(`Threshold: it pays from ${$}${m.toLocaleString("en-US")}, not ${$}${w.threshold.toLocaleString("en-US")}. A move between the two isn't covered.`);
+        // Nearest available strike: always a loose fit (never dropped to none) when it's within 35% and the market is on-topic.
+        if (far <= 0.35 && fit !== "none") fit = FIT_ORDER[fit] > FIT_ORDER.loose && far <= 0.1 ? down(fit) : "loose";
+        else fit = down(fit, far > 0.1 ? 2 : 1); }
       if (better && Math.abs(m - w.threshold) / w.threshold > 0.2 && FIT_ORDER[fit] > FIT_ORDER.loose) { fit = "loose"; gaps.unshift(`Threshold: it pays at ${m.toLocaleString("en-US")}, far from your ${w.threshold.toLocaleString("en-US")}. It's a different bet, not cover for your worry.`); }
       else if (better) gaps.push(`Threshold: it pays from ${m.toLocaleString("en-US")}, before your ${w.threshold.toLocaleString("en-US")} level, so it can pay when you haven't lost yet (costs more).`);
     }
@@ -105,8 +109,23 @@ export function codeChecks(w: Worry, c: Candidate, j: FitJudgement, now = new Da
   }
   // Any listed gap caps the fit at close.
   if (fit === "exact" && gaps.length) fit = "close";
+  // Never empty: an exact fit still only pays on the market's trigger definition.
+  if (fit !== "none" && (fit === "exact" || !gaps.length)) gaps.push(...definitionGaps(w, c));
   if ((j.side === "YES" ? c.yesAsk : c.noAsk) === null) gaps.push("No live price for this side, so it can't be costed.");
   return { ...j, fit, gaps: [...new Set(gaps)].slice(0, 6) };
+}
+
+/** Trigger-definition gaps read from the market's own rules (what the market counts), so "not covered" is never empty. */
+export function definitionGaps(w: Worry, c: Candidate): string[] {
+  const r = `${c.title} ${c.rules}`.toLowerCase(); const out: string[] = [];
+  if (/landfall/.test(r)) {
+    const st = (/\b(texas|florida|louisiana|georgia|carolina|alabama|mississippi)\b/.exec(c.title.toLowerCase()) ?? [])[1];
+    const nb = st === "texas" ? " a Louisiana landfall" : " a landfall elsewhere";
+    out.push(`Definition: pays only on a hurricane landfall${st ? ` in ${st[0]!.toUpperCase()}${st.slice(1)}` : ""}; a tropical storm, a near miss, or flooding from${nb} won't pay.`);
+  } else if (/\b(hurricane|tropical|cyclone|storm)\b/.test(r)) out.push("Definition: pays only on the storm category and area the rules name; weaker storms, near misses and flood damage alone won't pay.");
+  else if (w.threshold && /\b(price|trades?|candle|close[sd]?|settle)\b/.test(r)) out.push(`Definition: pays only if ${c.sources[0] ?? "the market's named price source"} shows the move as the rules define it; a move on your own exchange alone won't count.`);
+  if (!out.length) out.push(`Definition: pays only if the event happens exactly as the market's rules word it${c.sources.length ? `, as reported by ${c.sources[0]}` : ""}; a loss that doesn't meet that wording won't pay.`);
+  return out;
 }
 
 const SCHEMA = { type: "OBJECT", properties: { ratings: { type: "ARRAY", items: { type: "OBJECT", properties: {
@@ -117,7 +136,7 @@ The worry is the BAD outcome for the user. For each market: side = the side (YES
 - exact: same event AND same threshold, place, time window and definition; the payout happens whenever the worry happens. If any of timing, place or definition differ, it is NOT exact: drop one grade per difference.
 - close: same event, but a small gap (a slightly different threshold or date). A market whose area or time window is WIDER than the worry but still pays whenever the worry happens (e.g. "hurricane landfall anywhere in Texas by Nov 30" for "a hurricane hits Houston Oct 28–Nov 2") is close: it costs more but still covers. NARROWER than the worry (smaller area, shorter window, higher bar) is loose.
 - loose: related or correlated (a proxy), but it can easily fail to pay when the worry happens. A combined/parlay market that also needs an unrelated event is loose at best. A market that pays on only a slice of the bad outcome (e.g. "hike 50+ bps" when the worry is "no cut", which mostly means a hold) is loose; prefer the market (or NO side) that covers the whole bad outcome.
-- none: unrelated, or it does not pay when the worry happens.
+- none: unrelated, or it does not pay when the worry happens. Exception: the same event in the same direction at a FARTHER threshold (e.g. "oil above $115" for a worry about oil above $100) is loose, not none: it is the nearest available strike. A different place (e.g. a China cyclone for a Texas hurricane) or a single-minute/single-day price snapshot for a month-long worry is none.
 A city/trip worry vs a state-wide season-long market is close at best; if the market's definition excludes part of the worry (e.g. hurricanes only, so a tropical storm doesn't count) drop another grade. A personal loss (job loss, lower sales) vs a macro market (recession, GDP) is loose: the macro event can happen without the loss and vice versa. Be strict. A correlated proxy is "loose" at best. covered: one plain sentence on when it pays, in the user's terms.
 quote: copy ONE sentence verbatim from the market rules that defines the payout (or null). gaps: up to 3 things NOT covered, each ONE short plain sentence (max 15 words) a non-expert understands, stating a real difference between the worry and the market, e.g. "Settles on Binance's BTC/USDT price, not your exchange's." Never list something that matches the worry (if the threshold, place or date is the same, don't mention it). No parentheses, no hedging words like 'but', no prices. Return [] if nothing is missing.`;
 

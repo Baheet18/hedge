@@ -18,7 +18,7 @@ export interface Plan {
   verdict: Verdict; headline: string; worry: Worry; amountAtRisk: number; maxCost: number | null;
   best: Option | null; buyableNow: Option | null; alternatives: Option[];
   execute: null | { tool: "world_buy_outcome"; marketId: string; outcomeMint: string | null; side: "YES" | "NO"; amountUsd: number; shares: number; note: string };
-  next: string[]; searched: { world: number; polymarket: number; polymarketQueries?: string[] }; aiDegraded: boolean; warnings: string[]; disclaimer: string; ms: number;
+  next: string[]; worldIncluded?: boolean; searched: { world: number; polymarket: number; polymarketQueries?: string[] }; aiDegraded: boolean; warnings: string[]; disclaimer: string; ms: number;
 }
 
 const PER_VENUE = 6;
@@ -39,6 +39,18 @@ export function topicQueries(text: string): string[] {
   return [];
 }
 const FED = /\b(fed|fomc|federal reserve|rate (cut|hike)s?|interest rates?|cut rates|raise rates|powell)\b/i;
+/** Close time falls inside the worry's window (now .. deadline + 3 days). */
+export function inWindow(w: Worry, close: string | null, now = new Date()): boolean {
+  if (!w.deadline || !close) return false; const t = new Date(close).getTime();
+  return t >= now.getTime() && t <= new Date(`${w.deadline}T23:59:59Z`).getTime() + 3 * 864e5;
+}
+/** Month-scoped searches, e.g. "bitcoin october", "ethereum october", plus "<asset> dip" for a fall worry, when the window ends within ~6 weeks. */
+export function monthQueries(w: Worry, topic: string, now = new Date()): string[] {
+  if (!w.deadline || !topic || FED.test(w.text)) return [];
+  const dl = new Date(`${w.deadline}T12:00:00Z`); if (dl.getTime() - now.getTime() > 45 * 864e5 || dl < now) return [];
+  const t = topic.toLowerCase() === "btc" ? "bitcoin" : topic.toLowerCase() === "eth" ? "ethereum" : topic.toLowerCase();
+  return [`${t} ${MONTH_NAMES[dl.getUTCMonth()]}`, ...(w.direction === "below" ? [`${t} dip`] : [])];
+}
 const MONTH_NAMES = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
 /** Score bonus so the right Fed meeting/outcome ranks first: next-meeting worries favour the nearest meeting; "no cut"/"hold" worries favour the "no change" outcome. */
 export function topicBoost(text: string, c: Candidate, now = new Date()): number {
@@ -95,7 +107,8 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   const near = (c: Candidate) => { if (!w.threshold) return 0; const ns = titleNumbers(c.title).filter((n) => n / w.threshold! > 0.2 && n / w.threshold! < 5);
     return ns.length ? Math.max(0, 0.5 - Math.min(...ns.map((n) => Math.abs(n - w.threshold!) / w.threshold!))) : 0; };
   const topical = topicQueries(w.text);
-  const score = (c: Candidate) => { const o = overlap(w, c) + topicBoost(w.text, c, now); return o > 0 ? o + near(c) : 0; };
+  const inWin = (c: { closeTime: string | null }) => inWindow(w, c.closeTime, now);
+  const score = (c: Candidate) => { const o = overlap(w, c) + topicBoost(w.text, c, now); return o > 0 ? o + near(c) + (inWin(c) ? 0.25 : 0) : 0; };
   const worldAll = (input.candidates ?? []).flatMap(normalizeWorldAll);
   if ((input.candidates?.length ?? 0) && !worldAll.length) warnings.push("None of the World candidates had an id and title.");
   if (worldAll.some((c) => !c.rules)) warnings.push("Some World candidates had no rules: call world_get_events / world_get_markets for them, or they can't rate above loose.");
@@ -104,7 +117,8 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   const core = w.keyTerms.slice(0, 2).join(" ");
   // Polymarket's search matches short topic words best ("bitcoin", "recession"); long phrases with numbers often return nothing.
   const topic = (w.keyTerms.find((k) => k.length > 3 && !/^\d|^(below|above|drops?|falls?|crash|price|lose|loss|job)$/.test(k)) ?? "").trim();
-  const queries = [...new Set([...topical, ...(w.searchQueries.length ? w.searchQueries : [w.subject]).slice(0, 2), ...(core ? [core] : []), ...(topic ? [topic] : [])].map((q) => q.toLowerCase()))].slice(0, 4);
+  const monthQ = monthQueries(w, topic, now);
+  const queries = [...new Set([...topical, ...monthQ, ...(w.searchQueries.length ? w.searchQueries : [w.subject]).slice(0, 2), ...(core ? [core] : []), ...(topic ? [topic] : [])].map((q) => q.toLowerCase()))].slice(0, 4 + Math.min(1, monthQ.length));
   const poly = input.skipReference ? { candidates: [], warnings: [] as string[] } : await referenceCandidates(queries, score, PER_VENUE, Math.min(2200, Math.max(1200, BUDGET_MS - 2500 - (Date.now() - t0))));
   warnings.push(...poly.warnings);
   if (!input.skipReference) console.log("[hedge] polymarket", JSON.stringify({ queries, hits: poly.candidates.length, top: poly.candidates.slice(0, 3).map((c) => c.title), warnings: poly.warnings }));
@@ -131,7 +145,8 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   const per = (o: Option) => (o.cost ? o.cost.price + o.cost.feePerShare : 9);
   const dist = (o: Option) => { if (!w.threshold) return 0; const ns = titleNumbers(o.market.title).filter((n) => n / w.threshold! > 0.2 && n / w.threshold! < 5);
     return ns.length ? Math.min(...ns.map((n) => Math.abs(n - w.threshold!) / w.threshold!)) : 1; };
-  opts.sort((a, b) => FIT_ORDER[b.fit] - FIT_ORDER[a.fit] || dist(a) - dist(b) || (a.cost ? 0 : 1) - (b.cost ? 0 : 1) || Number(b.buyableViaPayBox) - Number(a.buyableViaPayBox) || per(a) - per(b));
+  const win = (o: Option) => (inWin(o.market) ? 0 : 1);
+  opts.sort((a, b) => FIT_ORDER[b.fit] - FIT_ORDER[a.fit] || win(a) - win(b) || dist(a) - dist(b) || (a.cost ? 0 : 1) - (b.cost ? 0 : 1) || Number(b.buyableViaPayBox) - Number(a.buyableViaPayBox) || per(a) - per(b));
   const good = opts.filter((o) => decide(o).length === 0);
   const best = good[0] ?? null;
   const buyableNow = best && !best.buyableViaPayBox ? good.find((o) => o.buyableViaPayBox) ?? null : best;
@@ -173,7 +188,15 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
     if (buyableNow) { headline += ` Buyable now through PayBox: ${buyableNow.side} on World "${buyableNow.market.title}" for ${usd(buyableNow.cost!.cost)}, ${share(buyableNow)} (${buyableNow.fit} fit).`; buy(buyableNow); }
     else next.unshift(`Hedge can't buy on Polymarket. Give the user the link (${best.market.url}); nothing on World fits well enough to buy through PayBox.`);
   }
-  return { ...base, verdict, headline, best, buyableNow: buyableNow && buyableNow !== best ? buyableNow : null, alternatives: opts.filter((o) => o !== best && o !== buyableNow).slice(0, 3),
+  // Timeframe: if the pick runs well past the worry window while an in-window market exists, say why.
+  if (best && w.deadline && !inWin(best.market)) {
+    const alt = opts.find((o) => o !== best && o.fit !== "none" && inWin(o.market) && o.cost);
+    if (alt) { const why = FIT_ORDER[best.fit] > FIT_ORDER[alt.fit] ? `it fits better (${best.fit} vs ${alt.fit}${dist(alt) > dist(best) ? `; the in-window market triggers at a different level` : ""})` : "the in-window market isn't good cover";
+      headline += ` Picked over the cheaper in-window "${alt.market.title}" (${cents(alt.cost!.price)}) because ${why}; that one only pays inside your window, so consider it if the longer cover isn't worth ${best.cost ? cents(best.cost.price) : "the extra"}.`; }
+  }
+  if (!worldAll.length && !w.isBet && verdict !== "no_good_hedge") { headline += " Note: World markets weren't included in this request, so nothing here is buyable through PayBox. Pass World candidates (world_search → world_get_events) to include them.";
+    next.unshift("World markets were NOT included (none were passed as candidates; Hedge can't reach World directly). Call world_search with the worry's query, world_get_events(ticker) for the top hits, and call hedge_plan again with them as candidates."); }
+  return { ...base, verdict, headline, best, buyableNow: buyableNow && buyableNow !== best ? buyableNow : null, alternatives: opts.filter((o) => o !== best && o !== buyableNow && o.fit !== "none").slice(0, 3), worldIncluded: worldAll.length > 0,
     execute, next, searched: { world: worldAll.length, polymarket: poly.candidates.length, polymarketQueries: input.skipReference ? [] : queries }, aiDegraded, warnings, ms: Date.now() - t0 };
 }
 
