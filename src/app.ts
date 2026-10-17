@@ -21,7 +21,7 @@ export function createApp() {
   app.get("/", (c) => c.json({
     product: "Hedge", tagline: "Tell it what you're worried about. It finds the market that pays you if it happens, or tells you there isn't one.",
     endpoints: { "POST /v1/plan": `paid (${config.price} USDC via x402${paidMode() ? "" : ", currently in unpaid dev mode"}): {worry, amountAtRisk, maxCost?, candidates?[World markets]}`, "POST /v1/preview": "free: {worry} → parsed worry + world_search queries", "GET /health": "status" },
-    universe: "World (world.xyz) markets supplied by the agent from PayBox's World plugin. Without candidates, Polymarket is searched as a non-buyable reference.",
+    universe: "Venue-agnostic: World markets supplied by the agent (buyable through PayBox) plus Polymarket, searched on every request (link only).",
   }));
   app.get("/health", (c) => c.json({ ok: true, paid: paidMode(), network: config.network, price: config.price, ai: llmAvailable() }));
   if (paidMode()) {

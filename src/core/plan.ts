@@ -63,7 +63,10 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   if ((input.candidates?.length ?? 0) && !worldAll.length) warnings.push("None of the World candidates had an id and title.");
   if (worldAll.some((c) => !c.rules)) warnings.push("Some World candidates had no rules: call world_get_events / world_get_markets for them, or they can't rate above loose.");
   const world = worldAll.map((c) => ({ c, o: score(c) })).sort((a, b) => b.o - a.o).slice(0, PER_VENUE).map((x) => x.c);
-  const poly = await referenceCandidates(w.searchQueries.length ? w.searchQueries : [w.subject], score, PER_VENUE);
+  // Always add a core-event query (first two key terms) so city-level wording still finds region-level markets.
+  const core = w.keyTerms.slice(0, 2).join(" ");
+  const queries = [...new Set([...(w.searchQueries.length ? w.searchQueries : [w.subject]).slice(0, 3), ...(core ? [core] : [])])];
+  const poly = await referenceCandidates(queries, score, PER_VENUE);
   warnings.push(...poly.warnings);
   if (!worldAll.length) warnings.push("No World markets were supplied, so nothing here is buyable through PayBox yet. Run world_search with the preview queries and pass the results as candidates.");
   const cs = [...world, ...poly.candidates];

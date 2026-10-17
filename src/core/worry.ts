@@ -16,7 +16,7 @@ Today is ${today}. For scheduled events (an FOMC meeting, an election, a data re
 - summary: the BAD event in one plain line: the thing that, if it happens, costs the user money. Keep negations ("the Fed does NOT cut in December" stays a non-cut).
 - direction: "above"/"below" when the worry is a number crossing a threshold, else "happens".
 - threshold/unit: the number and unit if any (e.g. 2000, "NGN per USD"; 100000, "USD per BTC").
-- searchQueries: 3 short search phrases a prediction-market search box would match (market-style wording, e.g. "Nigerian naira", "USD NGN", "hurricane Texas landfall"). No dates in queries.
+- searchQueries: 3 short search phrases a prediction-market search box would match (market-style wording, e.g. "Nigerian naira", "USD NGN", "hurricane Texas landfall"). No dates in queries. Markets are rarely city-level: include one query at the wider region level (the state or country, e.g. "hurricane landfall Texas" for Houston) and one with just the core event (e.g. "hurricane landfall").
 - keyTerms: 3-8 lowercase words that a matching market's rules must mention.
 - isBet: true when the user is betting on an outcome they want or predict (\"I think the Knicks will win, put money on it\") rather than protecting against a loss that happens to them. A hedge needs a real exposure.
 Never invent facts about markets. Return JSON only.`;

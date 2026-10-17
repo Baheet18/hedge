@@ -149,3 +149,11 @@ test("partial-cover gap text is generic", () => withKey(async () => {
     const g = p.alternatives[0]!.whatsNotCovered.join(" "); assert.match(g, /Results outside this bucket aren't covered/); assert.doesNotMatch(g, /hikes/);
   } finally { restore(); }
 }));
+
+test("Polymarket search always includes a core-event query from the key terms", () => withKey(async () => {
+  const seen: string[] = []; const real = globalThis.fetch;
+  const restore = stubFetch({ poly: [], gemini: { parse: { summary: "s", category: "weather", subject: "Hurricane Houston", direction: "happens", threshold: null, unit: null, location: "Houston", deadline: null, windowStart: null, searchQueries: ["hurricane Houston landfall"], keyTerms: ["hurricane", "landfall", "houston"], isBet: false }, judge: () => ({ ratings: [] }) } });
+  const stubbed = globalThis.fetch; globalThis.fetch = (async (u: any, i: any) => { seen.push(String(u)); return stubbed(u, i); }) as any;
+  try { await plan({ worry: "I'm in Houston, worried a hurricane hits", amountAtRisk: 100 }, NOW); assert.ok(seen.some((u) => u.includes("q=hurricane%20landfall&"))); }
+  finally { globalThis.fetch = real; restore(); }
+}));

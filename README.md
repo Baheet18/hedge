@@ -90,12 +90,12 @@ World candidate objects are passed as World's tools return them. Hedge reads `id
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm test                         # 26 offline tests (Gemini + Polymarket stubbed)
+pnpm test                         # 27 offline tests (Gemini + Polymarket stubbed)
 GEMINI_API_KEY=... pnpm dev       # http://localhost:8788
 GEMINI_API_KEY=... pnpm worries   # 10 real worries end to end
 cd plugin && pnpm install --frozen-lockfile && pnpm test   # PayBox validation → dist/plugin.mjs
 ```
 
-Environment: `GEMINI_API_KEY`; for paid mode `HEDGE_PAY_TO` (Base USDC address) plus `CDP_API_KEY_ID`/`CDP_API_KEY_SECRET` (or `X402_FACILITATOR_URL`). Without them the service runs unpaid (`x-hedge-mode: unpaid-dev`). Optional: `HEDGE_PRICE` (default `$0.10`), `HEDGE_FEE_RATE`, `HEDGE_MAX_PRICE` (0.7).
+Environment: `GEMINI_API_KEY`; for paid mode `HEDGE_PAY_TO` (Base USDC address) plus a facilitator: `X402_FACILITATOR_URL` (production uses the keyless PayAI facilitator, `https://facilitator.payai.network`, which supports x402 v2 `exact` on Base mainnet) or `CDP_API_KEY_ID`/`CDP_API_KEY_SECRET` for Coinbase's. Without them the service runs unpaid (`x-hedge-mode: unpaid-dev`). Optional: `HEDGE_PRICE` (default `$0.10`), `HEDGE_FEE_RATE`, `HEDGE_MAX_PRICE` (0.7).
 
 The plugin reads `HEDGE_URL` (default `https://hedge-paybox.vercel.app`). Allow that host in the PayBox portal.
