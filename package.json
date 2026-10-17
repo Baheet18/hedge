@@ -10,7 +10,8 @@
     "dev": "tsx src/local.ts",
     "worries": "tsx scripts/worries.ts",
     "test": "tsx --test test/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "paid-demo": "tsx scripts/paid-demo.ts"
   },
   "dependencies": {
     "@coinbase/x402": "2.1.0",
@@ -23,6 +24,7 @@
     "hono": "^4.13.13"
   },
   "devDependencies": {
+    "@paybox-sh/sdk": "2.2.0",
     "@types/node": "^24.19.2",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3"

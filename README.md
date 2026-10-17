@@ -100,3 +100,32 @@ cd plugin && pnpm install --frozen-lockfile && pnpm test   # PayBox validation â
 Environment: `GEMINI_API_KEY`; for paid mode `HEDGE_PAY_TO` (Base USDC address) and/or `HEDGE_PAY_TO_SOLANA` (Solana USDC address) plus a facilitator: `X402_FACILITATOR_URL` (production uses the keyless PayAI facilitator, `https://facilitator.payai.network`, which supports x402 v2 `exact` on Base mainnet) or `CDP_API_KEY_ID`/`CDP_API_KEY_SECRET` for Coinbase's. Without them the service runs unpaid (`x-hedge-mode: unpaid-dev`). Optional: `HEDGE_PRICE` (default `$0.01`), `HEDGE_FEE_RATE`, `HEDGE_MAX_PRICE` (0.7).
 
 The plugin reads `HEDGE_URL` (default `https://hedge-paybox.vercel.app`). Allow that host in the PayBox portal.
+
+## Paid demo with real money (0.01 USDC, nothing is bought)
+
+`scripts/paid-demo.ts` plays the part of any PayBox agent: PayBox `use_service` calls `POST /v1/plan` with
+`{worry: "Bitcoin drops below $55k", amountAtRisk: 100, candidates: [WXBTCYR-26LOW event]}`, pays the 0.01 USDC
+x402 fee from your own PayBox wallet (Base wallet named `eth1` preferred), signs locally with your paired PayBox key,
+polls the request until it finishes, and prints the plan plus the payment status and transaction link.
+It never calls `world_buy_outcome` and refuses to pay from Hedge's receiving wallets.
+
+Windows (PowerShell), needs Node.js 20+ and Git:
+
+```powershell
+git clone https://github.com/Baheet18/hedge
+cd hedge
+npm install
+npx @paybox-sh/sdk login      # opens the browser; sign in to PayBox
+npx @paybox-sh/sdk connect    # pairs a local signing key (confirm the emoji code in the PayBox app)
+npm run paid-demo
+```
+
+Optional: `$env:HEDGE_CREDENTIAL="<credential id>"` to pick a wallet, `$env:HEDGE_WALLET_NAME="eth1"` to change the preferred name.
+If PayBox asks for approval, approve it in the PayBox app; the script keeps polling (up to 5 minutes). Don't rerun to retry
+until you've checked the printed request status.
+
+### Proven with real money
+
+| When (UTC) | Wallet | Network | Fee | Transaction | PayBox request |
+|---|---|---|---|---|---|
+| _pending_ | eth1 | Base | 0.01 USDC | _paste from `npm run paid-demo` output_ | |

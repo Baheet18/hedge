@@ -1,3 +1,5 @@
 allowBuilds:
   '@coinbase/x402': false
+  bufferutil: set this to true or false
   esbuild: false
+  utf-8-validate: set this to true or false
