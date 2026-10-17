@@ -62,7 +62,7 @@ export function codeChecks(w: Worry, c: Candidate, j: FitJudgement, now = new Da
   }
   if (/\b(and will|combined outcome|parlay)\b/i.test(`${c.title} ${c.rules.slice(0, 300)}`) && FIT_ORDER[fit] > FIT_ORDER.loose) { fit = "loose"; gaps.unshift("Combined market: it also needs a second, unrelated event to happen before it pays."); }
   if (!/\b(exactly|between)\b/i.test(w.text) && /\bexactly\b|\bbetween\b[^?.]*\band\b|\d\s*[-–]\s*\$?\d/i.test(c.title)) {
-    if (FIT_ORDER[fit] > FIT_ORDER.loose) fit = "loose"; gaps.unshift("Partial cover: it pays only if the result lands in this one bucket. Outcomes above or below it (for example more hikes than the bucket) aren't covered unless you buy every bucket.");
+    if (FIT_ORDER[fit] > FIT_ORDER.loose) fit = "loose"; gaps.unshift("Partial cover: it pays only if the result lands in this one bucket. Results outside this bucket aren't covered unless you buy every bucket.");
   }
   if ((j.side === "YES" ? c.yesAsk : c.noAsk) === null) gaps.push("No live price for this side, so it can't be costed.");
   return { ...j, fit, gaps: [...new Set(gaps)].slice(0, 6) };
@@ -74,7 +74,7 @@ const SCHEMA = { type: "OBJECT", properties: { ratings: { type: "ARRAY", items: 
 const SYSTEM = `You judge whether a prediction market is a hedge for a person's worry: does buying one side pay out when the bad thing happens to them?
 The worry is the BAD outcome for the user. For each market: side = the side (YES or NO) that pays when the bad outcome happens. Watch negations: if the worry is "the Fed does NOT cut", a "Will the Fed cut?" market hedges on NO, and a "no change" market hedges on YES. fit:
 - exact: same event, same threshold/region/time window; the payout happens whenever the worry happens.
-- close: same event, but a small gap (a slightly different threshold, date, or region).
+- close: same event, but a small gap (a slightly different threshold or date). A market whose area or time window is WIDER than the worry but still pays whenever the worry happens (e.g. "hurricane landfall anywhere in Texas by Nov 30" for "a hurricane hits Houston Oct 28–Nov 2") is close: it costs more but still covers. NARROWER than the worry (smaller area, shorter window, higher bar) is loose.
 - loose: related or correlated (a proxy), but it can easily fail to pay when the worry happens. A combined/parlay market that also needs an unrelated event is loose at best. A market that pays on only a slice of the bad outcome (e.g. "hike 50+ bps" when the worry is "no cut", which mostly means a hold) is loose; prefer the market (or NO side) that covers the whole bad outcome.
 - none: unrelated, or it does not pay when the worry happens.
 Be strict. A correlated proxy is "loose" at best. covered: one plain sentence on when it pays, in the user's terms.

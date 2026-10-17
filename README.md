@@ -90,7 +90,7 @@ World candidate objects are passed as World's tools return them. Hedge reads `id
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm test                         # 24 offline tests (Gemini + Polymarket stubbed)
+pnpm test                         # 26 offline tests (Gemini + Polymarket stubbed)
 GEMINI_API_KEY=... pnpm dev       # http://localhost:8788
 GEMINI_API_KEY=... pnpm worries   # 10 real worries end to end
 cd plugin && pnpm install --frozen-lockfile && pnpm test   # PayBox validation → dist/plugin.mjs

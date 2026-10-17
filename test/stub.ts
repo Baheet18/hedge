@@ -1,5 +1,5 @@
 // Offline stubs for Gemini and Polymarket.
-export type Gem = { parse?: object; judge?: (prompt: string) => object };
+export type Gem = { parse?: object; judge?: (prompt: string, system: string) => object };
 export function stubFetch(o: { gemini?: Gem; poly?: any[] }) {
   const real = globalThis.fetch;
   globalThis.fetch = (async (url: any, init: any) => {
@@ -8,7 +8,7 @@ export function stubFetch(o: { gemini?: Gem; poly?: any[] }) {
     if (u.includes("generativelanguage")) {
       if (!o.gemini) return new Response("{}", { status: 429 });
       const body = JSON.parse(init.body); const isJudge = JSON.stringify(body.generationConfig.responseSchema).includes("ratings");
-      const out = isJudge ? o.gemini.judge?.(body.contents[0].parts[0].text) : o.gemini.parse;
+      const out = isJudge ? o.gemini.judge?.(body.contents[0].parts[0].text, body.systemInstruction.parts[0].text) : o.gemini.parse;
       if (!out) return new Response("{}", { status: 429 });
       return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(out) }] } }] }), { status: 200 });
     }

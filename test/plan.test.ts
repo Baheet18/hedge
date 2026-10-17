@@ -132,3 +132,20 @@ test("preview tells the agent to fetch rules with world_get_events / world_get_m
 }));
 
 test("input validation", async () => { await assert.rejects(plan({ worry: "x", amountAtRisk: -1 })); await assert.rejects(plan({ worry: " ", amountAtRisk: 5 })); });
+
+test("judge prompt: wider area/window that still pays = close, narrower = loose", () => withKey(async () => {
+  let sys = "";
+  const restore = stubFetch({ poly: houstonPoly, gemini: { parse: { summary: "hurricane hits Houston", category: "weather", subject: "hurricane landfall Houston Texas", direction: "happens", threshold: null, unit: null, location: "Houston", deadline: "2026-11-02", windowStart: "2026-10-28", searchQueries: ["Texas hurricane landfall"], keyTerms: ["hurricane", "landfall", "texas", "houston"], isBet: false },
+    judge: (_p, s) => { sys = s; return { ratings: [] }; } } });
+  try { await plan({ worry: "I'm in Houston Oct 28–Nov 2, $1,200 at risk if a hurricane hits.", amountAtRisk: 1200 }, NOW);
+    assert.match(sys, /WIDER than the worry but still pays whenever the worry happens[\s\S]*?is close/); assert.match(sys, /NARROWER than the worry[\s\S]*?is loose/);
+  } finally { restore(); }
+}));
+
+test("partial-cover gap text is generic", () => withKey(async () => {
+  const restore = stubFetch({ poly: [], gemini: { parse: { summary: "BTC between 50k and 60k? no", category: "crypto", subject: "bitcoin", direction: "below", threshold: 74000, unit: null, location: null, deadline: "2026-12-31", windowStart: null, searchQueries: ["btc"], keyTerms: ["bitcoin"], isBet: false },
+    judge: () => ({ ratings: [{ index: 0, fit: "exact", side: "YES", covered: "x", quote: null, gaps: [] }] }) } });
+  try { const p = await plan({ worry: "My BTC savings get hurt if bitcoin drops under 74k", amountAtRisk: 100, candidates: [{ ticker: "WXBTC-R", title: "Bitcoin between $70,000 and $74,000 on Dec 31?", rules: "Resolves Yes if the close is in range.", yesAsk: 0.1, noAsk: 0.91, closeTime: "2027-01-01T00:00:00Z" }] }, NOW);
+    const g = p.alternatives[0]!.whatsNotCovered.join(" "); assert.match(g, /Results outside this bucket aren't covered/); assert.doesNotMatch(g, /hikes/);
+  } finally { restore(); }
+}));

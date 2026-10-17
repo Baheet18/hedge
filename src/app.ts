@@ -44,3 +44,6 @@ export function createApp() {
   });
   return app;
 }
+
+// Vercel may also treat this file as a Hono entrypoint; give it the app.
+export default createApp();
