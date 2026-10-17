@@ -2,8 +2,8 @@
 // Free-tier keys allow ~20 requests/day per model, so calls rotate across models and an over-quota model cools down.
 const list = (env: string | undefined, dflt: string) => (env || dflt).split(",").map((s) => s.trim()).filter(Boolean);
 export const MODELS = {
-  parse: list(process.env.HEDGE_PARSE_MODELS, "gemini-3.1-flash-lite,gemini-flash-lite-latest,gemini-3.5-flash-lite,gemini-3-flash-preview"),
-  judge: list(process.env.HEDGE_JUDGE_MODELS, "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-flash-lite-latest,gemini-3.6-flash,gemini-3-flash-preview"),
+  parse: list(process.env.HEDGE_PARSE_MODELS, "gemini-flash-lite-latest,gemini-3.5-flash-lite,gemini-3.1-flash-lite"),
+  judge: list(process.env.HEDGE_JUDGE_MODELS, "gemini-3.5-flash-lite,gemini-flash-lite-latest,gemini-3.6-flash,gemini-3.1-flash-lite"),
 };
 const cooldown = new Map<string, number>();
 export const llmAvailable = () => !!process.env.GEMINI_API_KEY;
