@@ -103,9 +103,9 @@ export async function polymarketSearch(q: string, ms = 2500): Promise<Candidate[
 }
 
 /** Search every query, merge and de-duplicate, then rank by `score` (overlap with the worry), drop zero-overlap hits, then cap. */
-export async function referenceCandidates(queries: string[], score: (c: Candidate) => number, cap = 24): Promise<{ candidates: Candidate[]; warnings: string[] }> {
+export async function referenceCandidates(queries: string[], score: (c: Candidate) => number, cap = 24, ms = 2500): Promise<{ candidates: Candidate[]; warnings: string[] }> {
   const warnings: string[] = [];
-  const rs = await Promise.allSettled(queries.slice(0, 4).map((q) => polymarketSearch(q)));
+  const rs = await Promise.allSettled(queries.slice(0, 4).map((q) => polymarketSearch(q, ms)));
   const seen = new Map<string, Candidate>();
   rs.forEach((r, i) => { if (r.status === "rejected") warnings.push(`Polymarket search "${queries[i]}" failed: ${r.reason?.message ?? r.reason}`);
     else for (const c of r.value) if (!seen.has(c.marketId)) seen.set(c.marketId, c); });

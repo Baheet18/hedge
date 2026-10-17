@@ -45,6 +45,12 @@ export function codeChecks(w: Worry, c: Candidate, j: FitJudgement, now = new Da
   let fit = j.fit; const gaps = [...j.gaps];
   const close = c.closeTime ? new Date(c.closeTime) : null;
   if (close && close.getTime() < now.getTime()) { gaps.unshift("This market has already closed."); fit = "none"; }
+  if (close && close.getTime() >= now.getTime()) {
+    const hrs = (close.getTime() - now.getTime()) / 36e5;
+    const cap = (g: string) => { gaps.unshift(g); if (FIT_ORDER[fit] > FIT_ORDER.loose) fit = "loose"; };
+    if (hrs < 48) cap(`Timing: this market resolves ${close.toISOString().slice(0, 16).replace("T", " ")} UTC, so it only covers the next ${Math.max(1, Math.round(hrs))} hours, not your whole worry.`);
+    else if (!w.deadline && hrs < 30 * 24) cap(`Timing: it closes ${close.toISOString().slice(0, 10)}, only weeks away. Your worry has no end date, so anything after that isn't covered.`);
+  }
   if (w.deadline && close) {
     const dl = new Date(`${w.deadline}T23:59:59Z`); const days = (close.getTime() - dl.getTime()) / 86400e3;
     if (days < -7) { gaps.unshift(`Timing: the market closes ${close.toISOString().slice(0, 10)}, before your worry window ends (${w.deadline}). Anything after that isn't covered.`); fit = down(fit); }
@@ -57,7 +63,8 @@ export function codeChecks(w: Worry, c: Candidate, j: FitJudgement, now = new Da
       const worse = w.direction === "above" ? m > w.threshold * 1.005 : m < w.threshold * 0.995;
       const better = w.direction === "above" ? m < w.threshold * 0.995 : m > w.threshold * 1.005;
       if (worse) { gaps.unshift(`Threshold: it pays only past ${m.toLocaleString("en-US")}, but your worry starts at ${w.threshold.toLocaleString("en-US")}. A move between the two isn't covered.`); fit = down(fit, Math.abs(m - w.threshold) / w.threshold > 0.1 ? 2 : 1); }
-      if (better) gaps.push(`Threshold: it pays from ${m.toLocaleString("en-US")}, before your ${w.threshold.toLocaleString("en-US")} level, so it can pay when you haven't lost yet (costs more).`);
+      if (better && Math.abs(m - w.threshold) / w.threshold > 0.2 && FIT_ORDER[fit] > FIT_ORDER.loose) { fit = "loose"; gaps.unshift(`Threshold: it pays at ${m.toLocaleString("en-US")}, far from your ${w.threshold.toLocaleString("en-US")}. It's a different bet, not cover for your worry.`); }
+      else if (better) gaps.push(`Threshold: it pays from ${m.toLocaleString("en-US")}, before your ${w.threshold.toLocaleString("en-US")} level, so it can pay when you haven't lost yet (costs more).`);
     }
   }
   if (/\b(and will|combined outcome|parlay)\b/i.test(`${c.title} ${c.rules.slice(0, 300)}`) && FIT_ORDER[fit] > FIT_ORDER.loose) { fit = "loose"; gaps.unshift("Combined market: it also needs a second, unrelated event to happen before it pays."); }
@@ -81,13 +88,13 @@ Be strict. A correlated proxy is "loose" at best. covered: one plain sentence on
 quote: copy ONE sentence verbatim from the market rules that defines the payout (or null). gaps: up to 3 short plain-language things NOT covered (timing, geography, definition, who decides, source). Do not mention prices.`;
 
 /** AI ratings (null if AI unavailable). Uses the raw worry text, so it can run in parallel with understand(). */
-export async function aiRate(w: Worry, cs: Candidate[], now = new Date()): Promise<FitJudgement[] | null> {
+export async function aiRate(w: Worry, cs: Candidate[], now = new Date(), timeoutMs = 12000): Promise<FitJudgement[] | null> {
   if (!llmAvailable() || !cs.length) return null;
   try {
     const list = cs.map((c, i) => `#${i} [${c.venue}] ${c.title}\ncloses: ${c.closeTime ?? "unknown"}${c.sources.length ? `\nsettlement source: ${c.sources.join(", ")}` : ""}\nrules: ${c.rules.slice(0, 700) || "(none given)"}`).join("\n\n");
     const o = await geminiJson<{ ratings: Array<{ index: number; fit: Fit; side: "YES" | "NO"; covered: string; quote?: string | null; gaps: string[] }> }>("judge", SYSTEM,
       `Today: ${now.toISOString().slice(0, 10)}\nWorry: ${JSON.stringify(w.text)}${w.parsedBy === "ai" ? `\nParsed: ${JSON.stringify({ summary: w.summary, direction: w.direction, threshold: w.threshold, unit: w.unit, location: w.location, windowStart: w.windowStart, deadline: w.deadline })}` : ""}\n\nMarkets:\n${list}`,
-      SCHEMA, 12000, process.env.HEDGE_JUDGE_THINKING || "minimal");
+      SCHEMA, timeoutMs, process.env.HEDGE_JUDGE_THINKING || "minimal");
     return cs.map((c, i) => { const r = o.ratings.find((x) => x.index === i);
       return r ? { marketId: c.marketId, fit: r.fit, side: r.side, covered: r.covered, gaps: (r.gaps ?? []).slice(0, 4), quote: r.quote ?? null, by: "ai" as const }
         : { marketId: c.marketId, fit: "none" as Fit, side: "YES" as const, covered: "", gaps: ["Not rated."], quote: null, by: "ai" as const }; });

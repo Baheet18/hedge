@@ -49,3 +49,33 @@ test("fee defaults to 1¢; networks list Solana first when a Solana payTo is set
     Object.assign(config, { payTo: "" }); assert.deepEqual(networks(), [config.solanaNetwork]); assert.ok(paidMode());
   } finally { Object.assign(config, save); }
 });
+
+const btc74 = { slug: "bitcoin-price-on-october-17-2026", title: "Bitcoin price on October 17?", endDate: "2026-10-17T16:00:00Z",
+  markets: [{ id: "b74", slug: "will-the-price-of-bitcoin-be-less-than-74000-on-october-17-2026", question: "Will the price of Bitcoin be less than $74,000 on October 17?", description: "Resolves Yes if the Binance BTC/USDT 1-minute candle close at 12:00 ET on October 17 is below $74,000.", bestAsk: 0.001, bestBid: 0, outcomePrices: JSON.stringify(["0.001", "0.999"]), endDate: "2026-10-17T16:00:00Z", active: true, closed: false }] };
+const judgeAll = (fit: string) => (p: string) => ({ ratings: p.split("\n").filter((l) => l.startsWith("#")).map((l) => ({ index: Number(l.slice(1, l.indexOf(" "))), fit, side: "YES", covered: "Pays if BTC is below the line.", quote: null, gaps: [] })) });
+
+test("live bug: today-closing $74k Polymarket market at 0.1¢ is not a hedge for 'BTC below $55k'", () => withKey(async () => {
+  const restore = stubFetch({ poly: [btc74], gemini: { parse: { ...btcParse, deadline: null }, judge: judgeAll("close") } });
+  try {
+    const r: any = await freeMatch({ worry: "Bitcoin drops below $55k", amountAtRisk: 100 }, NOW);
+    assert.equal(r.verdict, "no_good_hedge", r.headline); assert.equal(r.match, null);
+    assert.match(r.headline, /world_search/); assert.match(r.next.join(" "), /world_search/);
+  } finally { restore(); }
+}));
+
+test("timing: market closing within 48h caps at loose; sub-1¢ price is never good cover", async () => {
+  const { codeChecks } = await import("../src/core/fit.js"); const { rulesParse } = await import("../src/core/worry.js");
+  const w = { ...rulesParse("bitcoin below 55k", NOW), threshold: 55000, direction: "below" as const, deadline: null };
+  const c: any = { source: "reference", venue: "polymarket", marketId: "x", title: "Bitcoin below $55,000 today?", rules: "", closeTime: "2026-10-17T20:00:00Z", yesAsk: 0.3, noAsk: 0.7, yesBid: null, noBid: null, yesMint: null, noMint: null, url: null, sources: [], askQty: { yes: null, no: null } };
+  const r = codeChecks(w, c, { marketId: "x", fit: "exact", side: "YES", covered: "", gaps: [], quote: null, by: "ai" }, NOW);
+  assert.equal(r.fit, "loose"); assert.match(r.gaps[0]!, /next \d+ hours/);
+  const far = codeChecks(w, { ...c, title: "Bitcoin below $74,000 in 2026?", closeTime: "2027-01-01T00:00:00Z" }, { marketId: "x", fit: "close", side: "YES", covered: "", gaps: [], quote: null, by: "ai" }, NOW);
+  assert.equal(far.fit, "loose");
+});
+
+test("nearest threshold wins among equal fits", () => withKey(async () => {
+  const ev = { ...btcEvent, markets: [btcEvent.markets[1], { ...btcEvent.markets[0] }] };
+  const restore = stubFetch({ poly: [], gemini: { parse: btcParse, judge: judgeAll("close") } });
+  try { const r: any = await freeMatch({ worry: "Bitcoin drops below $55k", amountAtRisk: 100, candidates: [ev] }, NOW); assert.equal(r.match.marketId, "WXBTCYR-26LOW-B55K"); }
+  finally { restore(); }
+}));

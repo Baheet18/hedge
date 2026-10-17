@@ -48,7 +48,7 @@ export function rulesParse(text: string, now = new Date()): Worry {
 export async function understand(text: string, now = new Date()): Promise<Worry> {
   if (!llmAvailable()) return rulesParse(text, now);
   try {
-    const o = await geminiJson<Omit<Worry, "text" | "parsedBy">>("parse", SYSTEM(now.toISOString().slice(0, 10)), `Worry: ${JSON.stringify(text)}`, SCHEMA, 7000);
+    const o = await geminiJson<Omit<Worry, "text" | "parsedBy">>("parse", SYSTEM(now.toISOString().slice(0, 10)), `Worry: ${JSON.stringify(text)}`, SCHEMA, Number(process.env.HEDGE_PARSE_MS ?? 2800));
     return { ...rulesParse(text, now), ...o, isBet: !!o.isBet || isBetText(text), text, searchQueries: (o.searchQueries ?? []).slice(0, 4), keyTerms: (o.keyTerms ?? []).map((k) => k.toLowerCase()).slice(0, 8), parsedBy: "ai" };
   } catch { return rulesParse(text, now); }
 }
