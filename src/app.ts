@@ -7,6 +7,7 @@ import { createFacilitatorConfig } from "@coinbase/x402";
 import { plan, preview, freeMatch, type PlanInput } from "./core/plan.js";
 import { llmAvailable } from "./core/llm.js";
 import { config, paidMode, networks } from "./config.js";
+import { handleUpdate, tgSecret, tgToken } from "./telegram.js";
 
 function parse(b: any): PlanInput | string {
   if (!b || typeof b !== "object") return "Send JSON: {worry, amountAtRisk, maxCost?, candidates?}.";
@@ -34,6 +35,12 @@ export function createApp() {
     endpoints: { "POST /v1/plan": `paid (${config.price} USDC via x402${paidMode() ? "" : ", currently in unpaid dev mode"}): {worry, amountAtRisk, maxCost?, candidates?[World markets]}`, "POST /v1/match": "free: {worry, amountAtRisk?, candidates?} → best match + price + cost to cover (no candidates → world_search queries)", "POST /v1/preview": "free: {worry} → parsed worry + world_search queries", "GET /health": "status" },
     universe: "Venue-agnostic: World markets supplied by the agent (buyable through PayBox) plus Polymarket, searched on every request (link only).",
   }));
+  app.post("/api/telegram", async (c) => {
+    if (!tgToken() || c.req.header("x-telegram-bot-api-secret-token") !== tgSecret()) return c.json({ ok: false }, 401);
+    const u = await c.req.json().catch(() => null);
+    await handleUpdate(u).catch((e) => console.error("[hedge-tg]", e?.message));
+    return c.json({ ok: true });
+  });
   app.get("/health", (c) => c.json({ ok: true, paid: paidMode(), network: config.network, networks: networks(), price: config.price, ai: llmAvailable() }));
   if (paidMode()) {
     const fc = config.facilitatorUrl ? new HTTPFacilitatorClient({ url: config.facilitatorUrl }) : new HTTPFacilitatorClient(createFacilitatorConfig(config.cdpKeyId, config.cdpKeySecret));

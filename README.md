@@ -129,3 +129,13 @@ until you've checked the printed request status.
 | When (UTC) | Wallet | Network | Fee | Transaction | PayBox request |
 |---|---|---|---|---|---|
 | _pending_ | eth1 | Base | 0.01 USDC | _paste from `npm run paid-demo` output_ | |
+
+## Telegram bot: [@hedgebox_bot](https://t.me/hedgebox_bot)
+
+Standalone Hedge, no agent needed. Send a worry and an amount ("Bitcoin drops below $55k, cover $100"; default $100) and the bot replies
+with the free match: verdict, market and venue, side, price, cost → payout, coverage %, fit, what's not covered, and a button
+(Open on Polymarket, or Buy on World via PayBox). Bets get "that's a bet, not a hedge" with a hedge framing. World data isn't
+public server-side, so standalone matches come from Polymarket; World buys go through a PayBox agent.
+
+Webhook: `POST /api/telegram` on this Vercel app, authenticated with Telegram's `X-Telegram-Bot-Api-Secret-Token` (derived from
+`HEDGE_TG_BOT_TOKEN`, a Vercel env var). Set it with `setWebhook url=https://hedge-paybox.vercel.app/api/telegram secret_token=<derived>`.
