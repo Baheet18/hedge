@@ -6,7 +6,7 @@ export const FIT_ORDER: Record<Fit, number> = { exact: 3, close: 2, loose: 1, no
 const DOWN: Record<Fit, Fit> = { exact: "close", close: "loose", loose: "none", none: "none" };
 export const down = (f: Fit, n = 1): Fit => (n <= 0 ? f : down(DOWN[f], n - 1));
 const DIFF = /\b(closes before|ends before|after your|outside your|shorter|longer window|whole (state|country)|wider|narrower|area|region|statewide|county|city-level|definition|defined as|only (counts|pays|if)|doesn't count|does not count|not count|tropical storm|declar|officially)/i;
-const day = (d: Date) => d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "America/New_York" }); // markets settle on US Eastern dates
+const day = (d: Date) => new Date(d.getTime() - 60_000).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "America/New_York" }); // markets settle on US Eastern dates
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
 export const sentences = (t: string) => {
   const raw = t.replace(/\s+/g, " ").split(/(?<=[^\d\s][.!?]|[a-z]{2,}\d[.!?])\s+(?=[A-Z(“"])/).map((s) => s.trim()).filter(Boolean);
