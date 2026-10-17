@@ -28,5 +28,6 @@ export interface Candidate {
   url: string | null;
   sources: string[];             // who settles it (e.g. Chainlink, NHC)
   askQty: { yes: number | null; no: number | null }; // shares available at the ask (from world_orderbook)
+  tokenIds?: { yes: string | null; no: string | null }; // Polymarket CLOB token ids, for a depth check
 }
 export interface FitJudgement { marketId: string; fit: Fit; side: "YES" | "NO"; covered: string; gaps: string[]; quote: string | null; by: "ai" | "rules" }

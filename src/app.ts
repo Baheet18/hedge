@@ -31,8 +31,8 @@ export function createApp() {
     if (config.payTo) rs.register(config.network, new ExactEvmScheme());
     if (config.payToSolana) rs.register(config.solanaNetwork, new ExactSvmScheme());
     const accepts = [
-      ...(config.payToSolana ? [{ scheme: "exact", price: config.price, network: config.solanaNetwork, payTo: config.payToSolana, maxTimeoutSeconds: 120 }] : []),
-      ...(config.payTo ? [{ scheme: "exact", price: config.price, network: config.network, payTo: config.payTo, maxTimeoutSeconds: 120 }] : []),
+      ...(config.payToSolana ? [{ scheme: "exact", price: config.price, network: config.solanaNetwork, payTo: config.payToSolana, maxTimeoutSeconds: 600 }] : []),
+      ...(config.payTo ? [{ scheme: "exact", price: config.price, network: config.network, payTo: config.payTo, maxTimeoutSeconds: 600 }] : []),
     ];
     app.use(paymentMiddleware({ "POST /v1/plan": { accepts: accepts as any,
       description: "Hedge plan: the market that pays if your worry happens, cost to cover, what is and isn't covered", mimeType: "application/json" } }, rs));

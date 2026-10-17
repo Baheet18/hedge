@@ -13,7 +13,7 @@ const SCHEMA = { type: "OBJECT", properties: {
 
 const SYSTEM = (today: string) => `You turn a person's real-life financial worry into a precise event that a prediction market could pay out on.
 Today is ${today}. For scheduled events (an FOMC meeting, an election, a data release) the deadline is the day it is decided if you know it. Resolve relative dates ("before Dec" = the last day of November this year unless clearly next year; "during my Oct 28 trip" = windowStart and deadline around that date).
-- summary: the BAD event in one plain line: the thing that, if it happens, costs the user money. Keep negations ("the Fed does NOT cut in December" stays a non-cut).
+- summary: the BAD event in one plain line, in the user's own scope: keep their place, date and definition exactly (\"rain on the wedding day\" stays on the day; \"I lose my job in a recession\" stays a job loss, don't widen it to \"a recession is declared or GDP falls\"). Keep negations ("the Fed does NOT cut in December" stays a non-cut).
 - direction: "above"/"below" when the worry is a number crossing a threshold, else "happens".
 - threshold/unit: the number and unit if any (e.g. 2000, "NGN per USD"; 100000, "USD per BTC").
 - searchQueries: 3 short search phrases a prediction-market search box would match (market-style wording, e.g. "Nigerian naira", "USD NGN", "hurricane Texas landfall"). No dates in queries. Markets are rarely city-level: include one query at the wider region level (the state or country, e.g. "hurricane landfall Texas" for Houston) and one with just the core event (e.g. "hurricane landfall").
@@ -25,7 +25,7 @@ const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "
 /** Speculation, not protection: "put money on", "bet on", "I think X will win" with no stated loss. */
 export function isBetText(t: string): boolean {
   const s = t.toLowerCase();
-  const betty = /\b(put (some )?money on|bet on|place a bet|wager|i think .{1,60} will (win|beat|happen)|make (some )?money|easy money|lock|parlay|odds on)\b/.test(s);
+  const betty = /\b(put (some )?money on|put \$?\d[\d,.]*k? on|bet (\$?\d[\d,.]*k? )?on|place a bet|wager|i think .{1,60} (will )?(win|wins|beat|beats|happen)|make (some )?money|easy money|lock|parlay|odds on)\b/.test(s);
   const exposure = /\b(worried|worry|afraid|scared|lose|loss|at risk|wreck|hurt|cost me|my (job|house|rent|savings|business|flight|trip|wedding|crop|salary|mortgage)|insure|protect|hedge|cover)\b/.test(s);
   return betty && !exposure;
 }

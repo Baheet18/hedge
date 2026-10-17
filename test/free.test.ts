@@ -18,7 +18,7 @@ test("free match: best World market + price + cost to cover, without paid detail
     assert.equal(r.tier, "free"); assert.equal(r.verdict, "hedge");
     assert.equal(r.match.marketId, "WXBTCYR-26LOW-B55K"); assert.equal(r.match.side, "YES"); assert.equal(r.match.price, 0.126);
     assert.ok(r.match.costToCover > 12 && r.match.costToCover < 14); assert.equal(r.match.payout, 100);
-    const s = JSON.stringify(r); assert.doesNotMatch(s, /rulesQuote|whatsNotCovered|outcomeMint|YESb55kMint/);
+    const s = JSON.stringify(r); assert.doesNotMatch(s, /rulesQuote|outcomeMint|YESb55kMint/); assert.ok(Array.isArray(r.match.whatsNotCovered)); assert.match(r.headline, /Covers \$100.00 of your \$100.00 \(100%\)/);
     assert.deepEqual(r.worldSearch, []); assert.match(r.next.join(" "), /hedge_plan/);
   } finally { restore(); }
 }));
@@ -77,5 +77,55 @@ test("nearest threshold wins among equal fits", () => withKey(async () => {
   const ev = { ...btcEvent, markets: [btcEvent.markets[1], { ...btcEvent.markets[0] }] };
   const restore = stubFetch({ poly: [], gemini: { parse: btcParse, judge: judgeAll("close") } });
   try { const r: any = await freeMatch({ worry: "Bitcoin drops below $55k", amountAtRisk: 100, candidates: [ev] }, NOW); assert.equal(r.match.marketId, "WXBTCYR-26LOW-B55K"); }
+  finally { restore(); }
+}));
+
+test("missing askQty = size unverified (still recommended, warned), never zero", () => withKey(async () => {
+  const ev = JSON.parse(JSON.stringify(btcEvent)); delete ev.markets[0].yesAskQty;
+  const restore = stubFetch({ poly: [], gemini: { parse: { ...btcParse, threshold: 50000, summary: "Bitcoin falls below $50,000" }, judge } });
+  try {
+    const r: any = await freeMatch({ worry: "Bitcoin drops below $50k", amountAtRisk: 1000, candidates: [ev] }, NOW);
+    assert.notEqual(r.verdict, "no_good_hedge", r.headline); assert.equal(r.match.payout, 1000);
+    assert.match(r.match.warnings.join(" "), /Size not checked: run world_orderbook/);
+  } finally { restore(); }
+}));
+
+test("Lakers bet → 'bet, not a hedge' and asks what loss they're protecting", async () => {
+  const r: any = await freeMatch({ worry: "I think the Lakers win tonight, put $50 on it", amountAtRisk: 50 }, NOW);
+  assert.equal(r.verdict, "not_a_hedge"); assert.match(r.headline, /bet, not a hedge/); assert.match(r.headline, /What loss are you protecting/); assert.match(r.next.join(" "), /tickets/);
+});
+
+test("exact with a timing/place gap drops to close; publication lag flagged", async () => {
+  const { codeChecks } = await import("../src/core/fit.js"); const { rulesParse } = await import("../src/core/worry.js");
+  const w = { ...rulesParse("hurricane hits Houston during my trip", NOW), deadline: "2026-11-02" };
+  const c: any = { source: "reference", venue: "polymarket", marketId: "x", title: "Hurricane landfall in Texas by Nov 30?", rules: "Resolves Yes per NHC advisories.", closeTime: "2026-12-01T00:00:00Z", yesAsk: 0.05, noAsk: 0.95, yesBid: null, noBid: null, yesMint: null, noMint: null, url: null, sources: [], askQty: { yes: null, no: null } };
+  assert.equal(codeChecks(w, c, { marketId: "x", fit: "exact", side: "YES", covered: "", gaps: ["Covers all of Texas, a wider area than Houston."], quote: null, by: "ai" }, NOW).fit, "close");
+  const g = codeChecks({ ...w, deadline: "2026-12-31" }, { ...c, title: "US recession in 2026?", rules: "Resolves Yes if Q4 2026 GDP growth is negative in the BEA advance estimate.", closeTime: "2027-02-28T00:00:00Z" }, { marketId: "x", fit: "loose", side: "YES", covered: "", gaps: [], quote: null, by: "ai" }, NOW);
+  assert.match(g.gaps.join(" "), /Publication lag/);
+});
+
+test("fit 'none' headline doesn't mention a closest market; x402 timeout 600s", async () => {
+  const restore = stubFetch({ poly: [], gemini: { parse: btcParse, judge: judgeAll("none") } });
+  try { await withKey(async () => { const r: any = await freeMatch({ worry: "Bitcoin drops below $55k", amountAtRisk: 100, candidates: [btcEvent] }, NOW);
+    assert.equal(r.verdict, "no_good_hedge"); assert.doesNotMatch(r.headline, /closest/); assert.match(r.headline, /no listed market pays/); }); }
+  finally { restore(); }
+  const fs = await import("node:fs"); const src = fs.readFileSync(new URL("../src/app.ts", import.meta.url), "utf8");
+  assert.ok(!/maxTimeoutSeconds: 120/.test(src) && /maxTimeoutSeconds: 600/.test(src));
+});
+
+test("Polymarket ranking prefers the threshold nearest the user's among many BTC lines", async () => {
+  const { referenceCandidates } = await import("../src/core/universe.js"); const { overlap } = await import("../src/core/fit.js");
+  const ev = { slug: "btc-2026", title: "What price will Bitcoin hit in 2026?", endDate: "2027-01-01T00:00:00Z", markets: Array.from({ length: 40 }, (_, i) => { const k = 150 - i * 3; return { id: `m${k}`, slug: `btc-${k}k`, question: `Will Bitcoin dip to $${k},000 in 2026?`, description: "Bitcoin price", bestAsk: 0.2, bestBid: 0.19, outcomePrices: "[\"0.2\",\"0.8\"]", endDate: "2027-01-01T00:00:00Z", active: true, closed: false }; }) };
+  const restore = stubFetch({ poly: [ev] });
+  try { const { rulesParse } = await import("../src/core/worry.js"); const w = { ...rulesParse("bitcoin below 55k", NOW), threshold: 55000, keyTerms: ["bitcoin"] };
+    const near = (c: any) => { const n = Number(/\$(\d+),000/.exec(c.title)![1]) * 1000; return Math.max(0, 0.5 - Math.abs(n - 55000) / 55000); };
+    const r = await referenceCandidates(["bitcoin"], (c) => overlap(w, c) + near(c), 6); assert.match(r.candidates[0]!.title, /\$54,000|\$57,000/);
+  } finally { restore(); }
+});
+
+test("no good hedge still shows a loose reference as closestNotRecommended (never a 'none' one)", () => withKey(async () => {
+  const restore = stubFetch({ poly: [], gemini: { parse: btcParse, judge: judgeAll("loose") } });
+  try { const r: any = await freeMatch({ worry: "Bitcoin drops below $55k", amountAtRisk: 100, candidates: [btcEvent] }, NOW);
+    assert.equal(r.verdict, "no_good_hedge"); assert.equal(r.match, null); assert.equal(r.closestNotRecommended.fit, "loose"); assert.match(r.closestNotRecommended.why, /don't buy/); }
   finally { restore(); }
 }));

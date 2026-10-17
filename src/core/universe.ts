@@ -12,7 +12,7 @@ export function price(v: unknown): number | null {
   if (n > 1 && n <= 100) n /= 100; else if (n > 100 && n <= 1_000_000) n /= 1_000_000; else if (n > 1) return null;
   return n;
 }
-const qty = (v: unknown): number | null => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : null; };
+const qty = (v: unknown): number | null => { if (v === null || v === undefined || v === "") return null; const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : null; };
 const iso = (v: unknown): string | null => {
   if (v === null || v === undefined || v === "") return null;
   const n = Number(v); const d = Number.isFinite(n) ? new Date(n < 1e12 ? n * 1000 : n) : new Date(String(v));
@@ -90,14 +90,16 @@ export function normalizeWorld(input: any): Candidate | null {
 export async function polymarketSearch(q: string, ms = 2500): Promise<Candidate[]> {
   const d = await getJson(`https://gamma-api.polymarket.com/public-search?q=${encodeURIComponent(q)}&limit_per_type=6&events_status=active`, { ms });
   const out: Candidate[] = [];
-  for (const e of d.events ?? []) for (const m of (e.markets ?? []).slice(0, 12)) {
+  for (const e of d.events ?? []) for (const m of (e.markets ?? []).slice(0, 80)) {
     if (m.closed || m.active === false) continue;
+    const end = iso(m.endDate ?? e.endDate); if (end && new Date(end).getTime() - Date.now() < 48 * 36e5) continue; // resolves within 48h: never real cover
+    let tok: string[] = []; try { tok = JSON.parse(m.clobTokenIds ?? "[]"); } catch { /* ignore */ }
     let yes: number | null = null, no: number | null = null;
     try { const p = JSON.parse(m.outcomePrices ?? "[]"); yes = price(p[0]); no = price(p[1]); } catch { /* ignore */ }
     const yesAsk = price(m.bestAsk) ?? yes; const yesBid = price(m.bestBid);
     out.push({ source: "reference", venue: "polymarket", marketId: String(m.slug ?? m.id), title: String(m.question ?? e.title), rules: String(m.description ?? e.description ?? "").slice(0, 4000),
-      closeTime: iso(m.endDate ?? e.endDate), yesAsk, noAsk: yesBid !== null ? Math.min(1, 1 - yesBid) : no, yesBid, noBid: yesAsk !== null ? 1 - yesAsk : null,
-      yesMint: null, noMint: null, url: `https://polymarket.com/event/${e.slug}`, sources: m.resolutionSource ? [String(m.resolutionSource)] : [], askQty: { yes: null, no: null } });
+      closeTime: end, yesAsk, noAsk: yesBid !== null ? Math.min(1, 1 - yesBid) : no, yesBid, noBid: yesAsk !== null ? 1 - yesAsk : null,
+      yesMint: null, noMint: null, url: `https://polymarket.com/event/${e.slug}`, sources: m.resolutionSource ? [String(m.resolutionSource)] : [], askQty: { yes: null, no: null }, tokenIds: { yes: tok[0] ?? null, no: tok[1] ?? null } });
   }
   return out;
 }
@@ -111,4 +113,12 @@ export async function referenceCandidates(queries: string[], score: (c: Candidat
     else for (const c of r.value) if (!seen.has(c.marketId)) seen.set(c.marketId, c); });
   const ranked = [...seen.values()].map((c) => ({ c, o: score(c) })).filter((x) => x.o > 0).sort((a, b) => b.o - a.o);
   return { candidates: ranked.slice(0, cap).map((x) => x.c), warnings };
+}
+
+/** Shares available at the best ask on Polymarket's CLOB (public). null when not checked. */
+export async function polymarketDepth(tokenId: string, ask: number, ms = 1200): Promise<number | null> {
+  try { const d = await getJson(`https://clob.polymarket.com/book?token_id=${encodeURIComponent(tokenId)}`, { ms });
+    const asks = (d.asks ?? []).map((a: any) => ({ p: Number(a.price), s: Number(a.size) })).filter((a: any) => a.p > 0 && a.s > 0);
+    if (!asks.length) return 0; return asks.filter((a: any) => a.p <= ask + 0.005).reduce((t: number, a: any) => t + a.s, 0);
+  } catch { return null; }
 }
