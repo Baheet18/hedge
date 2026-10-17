@@ -64,15 +64,23 @@ export function regexParse(text: string, now = new Date()): Worry | null {
     searchQueries: [`${a[1]} price`, `${a[1]} ${dir}`, a[1]], keyTerms: [...a[2], dir, n], parsedBy: "regex" };
 }
 
+// FOMC decision days (statement day). "Next meeting" means the next one of these, not a guess.
+const FOMC = ["2026-10-28", "2026-12-09", "2027-01-27", "2027-03-17", "2027-04-28", "2027-06-09", "2027-07-28", "2027-09-15", "2027-10-27", "2027-12-08"];
+export function fedNextMeeting(text: string, now = new Date()): string | null {
+  if (!/\b(fed|fomc|federal reserve)\b/i.test(text) || !/\bnext (fed |fomc )?(meeting|decision)\b/i.test(text)) return null;
+  const today = now.toISOString().slice(0, 10); return FOMC.find((d) => d >= today) ?? null;
+}
+const withFed = (w: Worry, now: Date): Worry => { const d = fedNextMeeting(w.text, now); return d ? { ...w, deadline: d, category: "rates" } : w; };
+
 const parseCache = new Map<string, { at: number; w: Worry }>();
 export async function understand(text: string, now = new Date()): Promise<Worry> {
   const rx = regexParse(text, now); if (rx) return rx;
-  if (!llmAvailable()) return rulesParse(text, now);
+  if (!llmAvailable()) return withFed(rulesParse(text, now), now);
   const key = text.toLowerCase().replace(/\s+/g, " ").trim(); const hit = parseCache.get(key);
-  if (hit && process.env.HEDGE_NO_CACHE !== "1" && Date.now() - hit.at < 6 * 36e5) return { ...hit.w, text };
+  if (hit && process.env.HEDGE_NO_CACHE !== "1" && Date.now() - hit.at < 6 * 36e5) return withFed({ ...hit.w, text }, now);
   try {
     const o = await geminiJson<Omit<Worry, "text" | "parsedBy">>("parse", SYSTEM(now.toISOString().slice(0, 10)), `Worry: ${JSON.stringify(text)}`, SCHEMA, Number(process.env.HEDGE_PARSE_MS ?? 3500), process.env.HEDGE_PARSE_THINKING || "minimal");
     const w: Worry = { ...rulesParse(text, now), ...o, isBet: !!o.isBet || isBetText(text), text, searchQueries: (o.searchQueries ?? []).slice(0, 4), keyTerms: (o.keyTerms ?? []).map((k) => k.toLowerCase()).slice(0, 8), parsedBy: "ai" };
-    if (parseCache.size > 500) parseCache.clear(); parseCache.set(key, { at: Date.now(), w }); return w;
-  } catch { return rulesParse(text, now); }
+    if (parseCache.size > 500) parseCache.clear(); parseCache.set(key, { at: Date.now(), w }); return withFed(w, now);
+  } catch { return withFed(rulesParse(text, now), now); }
 }

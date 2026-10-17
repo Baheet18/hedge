@@ -35,3 +35,8 @@ test("'single day vs whole month' gap dropped when the worry names no window", (
   const w2 = rulesParse("Oil above $100 this month would wreck my business", NOW);
   assert.equal(cleanGaps({ ...w2, deadline: null }, c, ["Only covers a single day instead of the whole month."]).length, 1);
 });
+test("'next Fed meeting' resolves to the October 28 FOMC decision", async () => {
+  const { fedNextMeeting } = await import("../src/core/worry.js");
+  assert.equal(fedNextMeeting(FED, NOW), "2026-10-28");
+  assert.equal(fedNextMeeting("Bitcoin next meeting", NOW), null);
+});
