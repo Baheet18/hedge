@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "tsx src/local.ts",
     "worries": "tsx scripts/worries.ts",
-    "test": "tsx --test test/*.test.ts",
+    "test": "HEDGE_NO_CACHE=1 tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "paid-demo": "tsx scripts/paid-demo.ts"
   },

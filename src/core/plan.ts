@@ -121,7 +121,7 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
     const left = BUDGET_MS + 1500 - (Date.now() - t0); const d = tok && left > 500 ? await polymarketDepth(tok, topRef.cost.price, Math.min(1200, left)) : null;
     if (d === null) topRef.warnings.push("Depth not checked on Polymarket; size at this price may be smaller.");
     else if (d < topRef.cost.shares && d > 0) { topRef.warnings.push(`Polymarket depth: only about ${Math.floor(d)} shares at this price, so ${usd(Math.floor(d))} of cover; more would cost more.`); topRef.cost = costToCover(topRef.cost.price, amount, maxCost, Math.floor(d)); } }
-  const aiDegraded = w.parsedBy !== "ai" || js.some((j) => j.by !== "ai");
+  const aiDegraded = w.parsedBy === "rules" || js.some((j) => j.by !== "ai");
 
   let verdict: Verdict; let headline: string; const next: string[] = []; let execute: Plan["execute"] = null;
   const buy = (o: Option) => {

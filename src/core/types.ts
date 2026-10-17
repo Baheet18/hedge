@@ -13,7 +13,7 @@ export interface Worry {
   searchQueries: string[];      // for world_search / reference search
   keyTerms: string[];
   isBet: boolean;               // speculation ("put money on the Knicks"), not protection against a loss
-  parsedBy: "ai" | "rules";
+  parsedBy: "ai" | "regex" | "rules"; // regex = confident pattern parse (no AI needed); rules = fallback
 }
 export interface Candidate {
   source: "world" | "reference";

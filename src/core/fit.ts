@@ -120,12 +120,21 @@ A city/trip worry vs a state-wide season-long market is close at best; if the ma
 quote: copy ONE sentence verbatim from the market rules that defines the payout (or null). gaps: up to 3 things NOT covered, each ONE short plain sentence (max 15 words) a non-expert understands, stating a real difference between the worry and the market, e.g. "Settles on Binance's BTC/USDT price, not your exchange's." Never list something that matches the worry (if the threshold, place or date is the same, don't mention it). No parentheses, no hedging words like 'but', no prices. Return [] if nothing is missing.`;
 
 /** AI ratings (null if AI unavailable). Uses the raw worry text, so it can run in parallel with understand(). */
+const judgeCache = new Map<string, { at: number; r: FitJudgement[] }>();
 export async function aiRate(w: Worry, cs: Candidate[], now = new Date(), timeoutMs = 12000): Promise<FitJudgement[] | null> {
   if (!llmAvailable() || !cs.length) return null;
+  // Same worry + same markets within 15 minutes: reuse the ratings (prices are re-read live each time; only the fit judgement is cached).
+  const key = `${w.text.toLowerCase().replace(/\s+/g, " ").trim()}|${cs.map((c) => c.marketId).join(",")}`; const hit = judgeCache.get(key);
+  if (hit && process.env.HEDGE_NO_CACHE !== "1" && Date.now() - hit.at < 15 * 6e4) return hit.r;
+  const r = await aiRateUncached(w, cs, now, timeoutMs);
+  if (r) { if (judgeCache.size > 500) judgeCache.clear(); judgeCache.set(key, { at: Date.now(), r }); }
+  return r;
+}
+async function aiRateUncached(w: Worry, cs: Candidate[], now: Date, timeoutMs: number): Promise<FitJudgement[] | null> {
   try {
     const list = cs.map((c, i) => `#${i} [${c.venue}] ${c.title}\ncloses: ${c.closeTime ?? "unknown"}${c.sources.length ? `\nsettlement source: ${c.sources.join(", ")}` : ""}\nrules: ${c.rules.slice(0, 700) || "(none given)"}`).join("\n\n");
     const o = await geminiJson<{ ratings: Array<{ index: number; fit: Fit; side: "YES" | "NO"; covered: string; quote?: string | null; gaps: string[] }> }>("judge", SYSTEM,
-      `Today: ${now.toISOString().slice(0, 10)}\nWorry: ${JSON.stringify(w.text)}${w.parsedBy === "ai" ? `\nParsed: ${JSON.stringify({ summary: w.summary, direction: w.direction, threshold: w.threshold, unit: w.unit, location: w.location, windowStart: w.windowStart, deadline: w.deadline })}` : ""}\n\nMarkets:\n${list}`,
+      `Today: ${now.toISOString().slice(0, 10)}\nWorry: ${JSON.stringify(w.text)}${w.parsedBy !== "rules" ? `\nParsed: ${JSON.stringify({ summary: w.summary, direction: w.direction, threshold: w.threshold, unit: w.unit, location: w.location, windowStart: w.windowStart, deadline: w.deadline })}` : ""}\n\nMarkets:\n${list}`,
       SCHEMA, timeoutMs, process.env.HEDGE_JUDGE_THINKING || "minimal");
     return cs.map((c, i) => { const r = o.ratings.find((x) => x.index === i);
       return r ? { marketId: c.marketId, fit: r.fit, side: r.side, covered: r.covered, gaps: (r.gaps ?? []).slice(0, 4), quote: r.quote ?? null, by: "ai" as const }

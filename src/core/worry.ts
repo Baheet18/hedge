@@ -45,10 +45,34 @@ export function rulesParse(text: string, now = new Date()): Worry {
     threshold, unit: null, location: null, deadline, windowStart: null, isBet: isBetText(t), searchQueries: [words.slice(0, 3).join(" ")].filter(Boolean), keyTerms: words.slice(0, 6), parsedBy: "rules" };
 }
 
+const ASSETS: Array<[RegExp, string, string[]]> = [
+  [/\b(bitcoin|btc)\b/, "bitcoin", ["bitcoin", "btc"]], [/\b(ethereum|eth|ether)\b/, "ethereum", ["ethereum", "eth"]], [/\b(solana|sol)\b/, "solana", ["solana", "sol"]],
+  [/\b(xrp|ripple)\b/, "xrp", ["xrp"]], [/\b(dogecoin|doge)\b/, "dogecoin", ["dogecoin", "doge"]],
+];
+/** Simple "<asset> drops below / rises above <number>" worries need no AI to parse. Returns null when unsure. */
+export function regexParse(text: string, now = new Date()): Worry | null {
+  const t = text.toLowerCase().replace(/(\d),(\d{3})/g, "$1$2");
+  if (t.length > 160 || /\b(if|unless|and|or|while|during|trip|wedding|job|my|before|by|after|until)\b/.test(t.replace(/^(i'm |i am )?(worried|scared|afraid)( that)?\s*/, ""))) return null;
+  const a = ASSETS.find(([re]) => re.test(t)); if (!a) return null;
+  const m = /\b(drops?|falls?|crash(es)?|dips?|goes|sinks?|below|under|rises?|above|over|hits?|passes|exceeds?)\b[^\d$]{0,20}\$?\s?(\d+(?:\.\d+)?)\s*(k|m)?\b/.exec(t); if (!m) return null;
+  const threshold = Number(m[3]) * (m[4] === "k" ? 1e3 : m[4] === "m" ? 1e6 : 1);
+  const below = /drop|fall|crash|dip|sink|below|under/.test(m[0]) && !/above|over|rise|exceed/.test(m[0]);
+  if (/goes|hits?|passes/.test(m[0]) && !/below|under|above|over/.test(m[0])) return null;
+  const dir = below ? "below" : "above"; const n = threshold.toLocaleString("en-US");
+  return { ...rulesParse(text, now), text, summary: `${a[1][0]!.toUpperCase()}${a[1].slice(1)} ${below ? "falls below" : "rises above"} $${n}`, category: "crypto", subject: `${a[1]} price`,
+    direction: dir, threshold, unit: "USD", location: null, deadline: null, windowStart: null, isBet: isBetText(text),
+    searchQueries: [`${a[1]} price`, `${a[1]} ${dir}`, a[1]], keyTerms: [...a[2], dir, n], parsedBy: "regex" };
+}
+
+const parseCache = new Map<string, { at: number; w: Worry }>();
 export async function understand(text: string, now = new Date()): Promise<Worry> {
+  const rx = regexParse(text, now); if (rx) return rx;
   if (!llmAvailable()) return rulesParse(text, now);
+  const key = text.toLowerCase().replace(/\s+/g, " ").trim(); const hit = parseCache.get(key);
+  if (hit && process.env.HEDGE_NO_CACHE !== "1" && Date.now() - hit.at < 6 * 36e5) return { ...hit.w, text };
   try {
-    const o = await geminiJson<Omit<Worry, "text" | "parsedBy">>("parse", SYSTEM(now.toISOString().slice(0, 10)), `Worry: ${JSON.stringify(text)}`, SCHEMA, Number(process.env.HEDGE_PARSE_MS ?? 2800));
-    return { ...rulesParse(text, now), ...o, isBet: !!o.isBet || isBetText(text), text, searchQueries: (o.searchQueries ?? []).slice(0, 4), keyTerms: (o.keyTerms ?? []).map((k) => k.toLowerCase()).slice(0, 8), parsedBy: "ai" };
+    const o = await geminiJson<Omit<Worry, "text" | "parsedBy">>("parse", SYSTEM(now.toISOString().slice(0, 10)), `Worry: ${JSON.stringify(text)}`, SCHEMA, Number(process.env.HEDGE_PARSE_MS ?? 3500), process.env.HEDGE_PARSE_THINKING || "minimal");
+    const w: Worry = { ...rulesParse(text, now), ...o, isBet: !!o.isBet || isBetText(text), text, searchQueries: (o.searchQueries ?? []).slice(0, 4), keyTerms: (o.keyTerms ?? []).map((k) => k.toLowerCase()).slice(0, 8), parsedBy: "ai" };
+    if (parseCache.size > 500) parseCache.clear(); parseCache.set(key, { at: Date.now(), w }); return w;
   } catch { return rulesParse(text, now); }
 }

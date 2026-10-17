@@ -188,3 +188,18 @@ test("cleanGaps drops contradictory/garbled AI gaps and tidies wording", async (
   assert.deepEqual(cleanGaps({ ...w, deadline: null, windowStart: null }, c, ["Uses a higher price threshold than your worry.", "Extends the time window through the end of 2026.", "Different threshold ($55k instead of unspecified exact time, but matches price)", "settles on Binance BTC/USDT 1-minute lows (not your exchange)"]), ["Settles on Binance BTC/USDT 1-minute lows."]);
   assert.equal(cleanGaps({ ...w, threshold: 60000 }, c, ["Different threshold from your 60k level"]).length, 1);
 });
+
+test("regex parse handles simple asset-threshold worries without AI; complex ones go to AI", async () => {
+  const { regexParse } = await import("../src/core/worry.js");
+  const w = regexParse("Bitcoin drops below $55k", NOW)!; assert.equal(w.parsedBy, "regex"); assert.equal(w.threshold, 55000); assert.equal(w.direction, "below"); assert.ok(w.searchQueries.includes("bitcoin"));
+  assert.equal(regexParse("ETH rises above 5,000", NOW)!.direction, "above");
+  assert.equal(regexParse("If bitcoin drops below 55k my business fails", NOW), null);
+  assert.equal(regexParse("A hurricane hits Houston during my trip", NOW), null);
+});
+
+test("judge results are cached per worry + markets (one AI call for repeats)", () => withKey(async () => {
+  let calls = 0; const restore = stubFetch({ poly: [], gemini: { parse: btcParse, judge: (p) => { calls++; return judge(p); } } });
+  const prev = process.env.HEDGE_NO_CACHE; delete process.env.HEDGE_NO_CACHE;
+  try { await freeMatch({ worry: "Bitcoin drops below $54k cache test", amountAtRisk: 100, candidates: [btcEvent] }, NOW); await freeMatch({ worry: "bitcoin drops below $54k  cache test", amountAtRisk: 100, candidates: [btcEvent] }, NOW); assert.equal(calls, 1); }
+  finally { process.env.HEDGE_NO_CACHE = prev; restore(); }
+}));
