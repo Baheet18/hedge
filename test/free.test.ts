@@ -180,3 +180,11 @@ test("job loss vs recession market is loose (proxy gap first)", async () => {
   const r = codeChecks(rulesParse("I'm worried I lose my job in a US recession", NOW), c, { marketId: "r", fit: "close", side: "YES", covered: "", gaps: [], quote: null, by: "ai" }, NOW);
   assert.equal(r.fit, "loose"); assert.match(r.gaps[0]!, /^Proxy/);
 });
+
+test("cleanGaps drops contradictory/garbled AI gaps and tidies wording", async () => {
+  const { cleanGaps } = await import("../src/core/fit.js"); const { rulesParse } = await import("../src/core/worry.js");
+  const w = { ...rulesParse("bitcoin below 55k", NOW), threshold: 55000, direction: "below" as const };
+  const c: any = { title: "Will Bitcoin dip to $55,000 by December 31, 2026?" };
+  assert.deepEqual(cleanGaps({ ...w, deadline: null, windowStart: null }, c, ["Uses a higher price threshold than your worry.", "Extends the time window through the end of 2026.", "Different threshold ($55k instead of unspecified exact time, but matches price)", "settles on Binance BTC/USDT 1-minute lows (not your exchange)"]), ["Settles on Binance BTC/USDT 1-minute lows."]);
+  assert.equal(cleanGaps({ ...w, threshold: 60000 }, c, ["Different threshold from your 60k level"]).length, 1);
+});

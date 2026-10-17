@@ -6,7 +6,7 @@ export const FIT_ORDER: Record<Fit, number> = { exact: 3, close: 2, loose: 1, no
 const DOWN: Record<Fit, Fit> = { exact: "close", close: "loose", loose: "none", none: "none" };
 export const down = (f: Fit, n = 1): Fit => (n <= 0 ? f : down(DOWN[f], n - 1));
 const DIFF = /\b(closes before|ends before|after your|outside your|shorter|longer window|whole (state|country)|wider|narrower|area|region|statewide|county|city-level|definition|defined as|only (counts|pays|if)|doesn't count|does not count|not count|tropical storm|declar|officially)/i;
-const day = (d: Date) => d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+const day = (d: Date) => d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "America/New_York" }); // markets settle on US Eastern dates
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
 export const sentences = (t: string) => {
   const raw = t.replace(/\s+/g, " ").split(/(?<=[^\d\s][.!?]|[a-z]{2,}\d[.!?])\s+(?=[A-Z(“"])/).map((s) => s.trim()).filter(Boolean);
@@ -42,9 +42,21 @@ export function titleNumbers(s: string): number[] {
     .map((m) => Number(m[1]!.replace(/,/g, "")) * (m[2]?.toLowerCase() === "k" ? 1e3 : m[2]?.toLowerCase() === "m" ? 1e6 : 1)).filter((n) => n > 0);
 }
 
+/** Drop AI gaps that are vague or contradict the match (e.g. "different threshold" when the market's threshold equals the user's), and tidy wording. */
+export function cleanGaps(w: Worry, c: Candidate, gaps: string[]): string[] {
+  const ns = titleNumbers(c.title);
+  const sameThreshold = !!w.threshold && ns.some((n) => Math.abs(n - w.threshold!) / w.threshold! < 0.005);
+  return gaps.map((g) => g.replace(/\s*\([^)]*\)/g, "").replace(/\s+/g, " ").trim().replace(/^[a-z]/, (x) => x.toUpperCase()))
+    .filter((g) => g.length >= 12 && g.length <= 160)
+    .filter((g) => !(sameThreshold && /\b(threshold|price level|strike|price target)\b/i.test(g)))
+    .filter((g) => !(!w.deadline && !w.windowStart && /\b(extends?|longer|wider) (the )?(time )?window\b|\bthrough the end of\b/i.test(g)))
+    .filter((g) => !/\b(but|however) (it )?(matches|covers|is the same)\b|\bunspecified\b/i.test(g))
+    .map((g) => (/[.!?]$/.test(g) ? g : `${g}.`));
+}
+
 /** Code checks applied on top of any AI rating. Mutates gaps; returns the adjusted fit. */
 export function codeChecks(w: Worry, c: Candidate, j: FitJudgement, now = new Date()): FitJudgement {
-  let fit = j.fit; const gaps = [...j.gaps];
+  let fit = j.fit; const gaps = j.by === "ai" ? cleanGaps(w, c, j.gaps) : [...j.gaps];
   const close = c.closeTime ? new Date(c.closeTime) : null;
   if (close && close.getTime() < now.getTime()) { gaps.unshift("This market has already closed."); fit = "none"; }
   if (close && close.getTime() >= now.getTime()) {
@@ -105,7 +117,7 @@ The worry is the BAD outcome for the user. For each market: side = the side (YES
 - loose: related or correlated (a proxy), but it can easily fail to pay when the worry happens. A combined/parlay market that also needs an unrelated event is loose at best. A market that pays on only a slice of the bad outcome (e.g. "hike 50+ bps" when the worry is "no cut", which mostly means a hold) is loose; prefer the market (or NO side) that covers the whole bad outcome.
 - none: unrelated, or it does not pay when the worry happens.
 A city/trip worry vs a state-wide season-long market is close at best; if the market's definition excludes part of the worry (e.g. hurricanes only, so a tropical storm doesn't count) drop another grade. A personal loss (job loss, lower sales) vs a macro market (recession, GDP) is loose: the macro event can happen without the loss and vice versa. Be strict. A correlated proxy is "loose" at best. covered: one plain sentence on when it pays, in the user's terms.
-quote: copy ONE sentence verbatim from the market rules that defines the payout (or null). gaps: up to 3 short plain-language things NOT covered (timing, geography, definition, who decides, source). Do not mention prices.`;
+quote: copy ONE sentence verbatim from the market rules that defines the payout (or null). gaps: up to 3 things NOT covered, each ONE short plain sentence (max 15 words) a non-expert understands, stating a real difference between the worry and the market, e.g. "Settles on Binance's BTC/USDT price, not your exchange's." Never list something that matches the worry (if the threshold, place or date is the same, don't mention it). No parentheses, no hedging words like 'but', no prices. Return [] if nothing is missing.`;
 
 /** AI ratings (null if AI unavailable). Uses the raw worry text, so it can run in parallel with understand(). */
 export async function aiRate(w: Worry, cs: Candidate[], now = new Date(), timeoutMs = 12000): Promise<FitJudgement[] | null> {
