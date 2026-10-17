@@ -112,7 +112,7 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   if (topRef?.cost) { const c = cs.find((x) => x.marketId === topRef.market.marketId); const tok = topRef.side === "YES" ? c?.tokenIds?.yes : c?.tokenIds?.no;
     const d = tok && Date.now() - t0 < BUDGET_MS - 1300 ? await polymarketDepth(tok, topRef.cost.price) : null;
     if (d === null) topRef.warnings.push("Depth not checked on Polymarket; size at this price may be smaller.");
-    else if (d < topRef.cost.shares) topRef.warnings.push(`Polymarket depth: only about ${Math.floor(d)} shares at this price, so ${usd(Math.floor(d))} of cover; more would cost more.`); }
+    else if (d < topRef.cost.shares && d > 0) { topRef.warnings.push(`Polymarket depth: only about ${Math.floor(d)} shares at this price, so ${usd(Math.floor(d))} of cover; more would cost more.`); topRef.cost = costToCover(topRef.cost.price, amount, maxCost, Math.floor(d)); } }
   const aiDegraded = w.parsedBy !== "ai" || js.some((j) => j.by !== "ai");
 
   let verdict: Verdict; let headline: string; const next: string[] = []; let execute: Plan["execute"] = null;
@@ -134,7 +134,7 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
     buy(best);
   } else {
     verdict = "hedge_elsewhere";
-    headline = `Best protection is on Polymarket at ${cents(best.cost!.price)}: buy ${best.side} on "${best.market.title}" there (${best.market.url}). ${usd(best.cost!.cost)} → ${share(best)} (${best.fit} fit).`;
+    headline = `Best protection is on Polymarket at ${cents(best.cost!.price)}: buy ${best.side} on "${best.market.title}" there (${best.market.url}). ${usd(best.cost!.cost)} ${share(best).replace(/\.$/, "")} (${best.fit} fit).`;
     if (buyableNow) { headline += ` Buyable now through PayBox: ${buyableNow.side} on World "${buyableNow.market.title}" for ${usd(buyableNow.cost!.cost)}, ${share(buyableNow)} (${buyableNow.fit} fit).`; buy(buyableNow); }
     else next.unshift(`Hedge can't buy on Polymarket. Give the user the link (${best.market.url}); nothing on World fits well enough to buy through PayBox.`);
   }

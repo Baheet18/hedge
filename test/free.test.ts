@@ -129,3 +129,12 @@ test("no good hedge still shows a loose reference as closestNotRecommended (neve
     assert.equal(r.verdict, "no_good_hedge"); assert.equal(r.match, null); assert.equal(r.closestNotRecommended.fit, "loose"); assert.match(r.closestNotRecommended.why, /don't buy/); }
   finally { restore(); }
 }));
+
+test("Polymarket depth caps the cover and the headline share", () => withKey(async () => {
+  const ev = { slug: "tx", title: "tx", endDate: "2026-12-01T00:00:00Z", markets: [{ id: "t", slug: "tx-landfall", question: "Will a hurricane make landfall in Texas by November 30, 2026?", description: "Resolves Yes if a hurricane makes landfall in Texas.", bestAsk: 0.09, bestBid: 0.08, outcomePrices: "[\"0.09\",\"0.91\"]", clobTokenIds: "[\"TOKYES\",\"TOKNO\"]", endDate: "2026-12-01T00:00:00Z", active: true, closed: false }] };
+  const restore = stubFetch({ poly: [ev], gemini: { parse: { ...btcParse, threshold: null, direction: "happens", subject: "hurricane landfall texas", keyTerms: ["hurricane", "landfall", "texas"], searchQueries: ["hurricane texas"], summary: "hurricane hits Houston", deadline: "2026-11-02" }, judge: judgeAll("close") } });
+  const f = globalThis.fetch; globalThis.fetch = (async (u: any, i: any) => String(u).includes("clob.polymarket.com") ? new Response(JSON.stringify({ asks: [{ price: "0.09", size: "95" }] })) : f(u, i)) as any;
+  try { const r: any = await freeMatch({ worry: "hurricane hits Houston on my trip", amountAtRisk: 200 }, NOW);
+    assert.ok(r.match, r.headline); assert.equal(r.match.payout, 95); assert.match(r.headline, /covers \$95.00 of your \$200.00 \(47.5%\)/); assert.match(r.match.warnings.join(" "), /depth/); }
+  finally { globalThis.fetch = f; restore(); }
+}));
