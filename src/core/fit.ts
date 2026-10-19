@@ -90,7 +90,8 @@ export function codeChecks(w: Worry, c: Candidate, j: FitJudgement, now = new Da
   }
   if (w.deadline && close) {
     const dl = new Date(`${w.deadline}T23:59:59Z`); const days = (close.getTime() - dl.getTime()) / 86400e3;
-    if (days < -7) { gaps.unshift(`Timing: cover ends ${day(close)}, before your worry window ends (${day(dl)}). Anything after that isn't covered.`); fit = down(fit); }
+    const windowDays = Math.max(1, (dl.getTime() - now.getTime()) / 86400e3);
+    if (days < -7 || (days < -1 && -days > 0.2 * windowDays)) { gaps.unshift(`Timing: cover ends ${day(close)}, before your worry window ends (${day(dl)}). Anything after that isn't covered.`); fit = down(fit); }
     else if (days < -1) gaps.push(`Timing: the market closes ${close.toISOString().slice(0, 10)}, a few days before ${w.deadline}. Check that your event is decided by then.`);
     else if (days > 45) gaps.push(`Timing: the market runs to ${day(close)}, well past your window ending ${day(dl)}. It can pay for an event after your exposure ends, so you are paying for extra time you don't need.`);
   }

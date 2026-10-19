@@ -78,3 +78,12 @@ test("regression: the AI inventing a level ($50,000, or the $100 cover amount) i
     } finally { restore(); }
   }
 }));
+
+test("regression: for a this-month worry, a weekly market that ends 5 days early is marked down, so the October market wins", () => withKey(async () => {
+  // A judge that (like the live one) calls both close; the code check must mark the early-closing weekly line down.
+  const lenient = (p: string) => ({ ratings: p.split("\n").filter((l) => /^#\d+ /.test(l)).map((l) => ({ index: Number(l.slice(1, l.indexOf(" "))), fit: /dip to \$70,000/.test(l) ? "close" : "none", side: "YES", covered: "Pays on a dip.", quote: null, gaps: [] })) });
+  const restore = stubFetch({ poly: [weekly, monthly, yearly], spot: SPOT, gemini: { parse: parse("2026-10-31"), judge: lenient } });
+  try { const f = await freeMatch({ worry: "I'm worried Bitcoin crashes this month", amountAtRisk: 100 }, NOW);
+    assert.match(f.match!.title, /dip to \$70,000 in October/, f.match!.title); assert.equal(f.match!.fit, "close");
+  } finally { restore(); }
+}));
