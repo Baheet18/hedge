@@ -17,6 +17,21 @@ export async function tg(method: string, body: object, token = tgToken()) {
   const r = await fetch(`${API}/bot${token}/${method}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   return r.json().catch(() => ({}));
 }
+/** Make sure Telegram delivers button taps. A webhook registered with allowed_updates that omits callback_query drops every tap
+ *  silently (no request ever reaches us). Re-register the same URL and secret with message + callback_query. Once per instance. */
+let webhookChecked: Promise<any> | null = null;
+export function ensureWebhook(token = tgToken(), call = tg): Promise<any> {
+  if (!token) return Promise.resolve(null);
+  return (webhookChecked ??= (async () => {
+    const info: any = (await call("getWebhookInfo", {}, token))?.result ?? {};
+    const allowed: string[] = info.allowed_updates ?? [];
+    console.log("[hedge-tg] webhook", JSON.stringify({ url: info.url ?? null, allowed_updates: allowed, pending: info.pending_update_count ?? null, last_error: info.last_error_message ?? null, last_error_date: info.last_error_date ?? null }));
+    if (!info.url || !allowed.length || allowed.includes("callback_query")) return { fixed: false, info };
+    const r = await call("setWebhook", { url: info.url, secret_token: tgSecret(token), allowed_updates: [...new Set([...allowed, "message", "edited_message", "callback_query"])] }, token);
+    console.log("[hedge-tg] webhook re-registered with callback_query", JSON.stringify({ ok: r?.ok ?? false, description: r?.description ?? null }));
+    return { fixed: !!r?.ok, info };
+  })().catch((e) => { console.error("[hedge-tg] webhook check failed", e?.message); webhookChecked = null; return null; }));
+}
 const esc = (s: unknown) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const usd = (n: number) => `$${n.toFixed(2)}`;
 
@@ -74,32 +89,35 @@ export function card(r: any, amount: number): { text: string; buttons: any[][] }
 }
 
 // ---------- follow-up questions ----------
-export type Ask = "time" | "loss" | "game";
+export type Ask = "time" | "loss" | "amount" | "game";
 interface Pending { ask: Ask; worry: string; amount: number; stated: boolean; games?: string[]; at: number }
 const pending = new Map<number, Pending>();
-const HEAD: Record<Ask, string> = { time: "⏳ <b>By when?</b>", loss: "🧭 <b>What would you actually lose?</b>", game: "🏀 <b>Which game?</b>" };
-const MARK = { time: "By when?", loss: "What would you actually lose?", game: "Which game?" } as const;
+const HEAD: Record<Ask, string> = { time: "⏳ <b>By when?</b>", loss: "🧭 <b>What would you actually lose?</b>", amount: "💵 <b>How much would you lose?</b>", game: "🏀 <b>Which game?</b>" };
+const MARK = { time: "By when?", loss: "What would you actually lose?", amount: "How much would you lose?", game: "Which game?" } as const;
 
 /** The question text carries the pending worry and amount, so no server state is needed. */
 export function question(ask: Ask, worry: string, amount: number, stated: boolean, games: string[] = []): { text: string; buttons: any[][] } {
   const body = ask === "time" ? "This week, this month, by end of year? Tap one, or reply to this message with your own date. I won't guess one."
+    : ask === "amount" ? "In US dollars, roughly, if it happens? Tap one or reply with a number, e.g. <i>$20,000</i>. That's the amount I'll price cover for."
     : ask === "loss" ? "That sounds like a view about what will happen. Hedge covers a loss you'd suffer. Do you own the asset or property, or have money riding on it? How much? Reply to this message, e.g. <i>I own a $200k flat in Lagos</i>."
     : "More than one market fits. Which one is your bet on? Tap it, or reply with the date or opponent.";
   const list = games.map((g, i) => `${i + 1}. ${esc(g)}`);
   const text = [HEAD[ask], body, ...(list.length ? ["", ...list] : []), "", `Worry: ${esc(worry)}`, `Amount: ${usd(amount)}${stated ? "" : " (default; say \"cover $X\" to change)"}`].join("\n");
   const buttons = ask === "time" ? [[{ text: "This week", callback_data: "t:week" }, { text: "This month", callback_data: "t:month" }], [{ text: "End of year", callback_data: "t:year" }, { text: "No end date", callback_data: "t:any" }]]
     : ask === "loss" ? [[{ text: "Nothing, it's just my view", callback_data: "v:view" }]]
+    : ask === "amount" ? [[{ text: "$1,000", callback_data: "a:1000" }, { text: "$10,000", callback_data: "a:10000" }, { text: "$100,000", callback_data: "a:100000" }], [{ text: "Skip (use $100)", callback_data: "a:skip" }]]
     : games.slice(0, 4).map((g, i) => [{ text: `${i + 1}. ${g.length > 48 ? `${g.slice(0, 47)}…` : g}`, callback_data: `g:${i + 1}` }]);
   return { text, buttons };
 }
 /** Read a pending question back from the bot's own message text. */
 export function readQuestion(text: string | undefined): Pending | null {
   if (!text) return null;
-  const ask: Ask | null = text.includes(MARK.time) ? "time" : text.includes(MARK.loss) ? "loss" : text.includes(MARK.game) ? "game" : null;
-  const w = /^Worry: (.+)$/m.exec(text); const a = /^Amount: \$([\d,]+(?:\.\d+)?)( \(default)?/m.exec(text);
+  const ask: Ask | null = text.includes(MARK.time) ? "time" : text.includes(MARK.loss) ? "loss" : text.includes(MARK.amount) ? "amount" : text.includes(MARK.game) ? "game" : null;
+  const w = /^Worry: ([\s\S]+?)\s*\n\s*Amount: /m.exec(text) ?? /^Worry: (.+)$/m.exec(text); // a worry may span lines
+  const a = /^Amount: \$([\d,]+(?:\.\d+)?)( \(default)?/m.exec(text);
   if (!ask || !w) return null;
   const games = ask === "game" ? [...text.matchAll(/^(\d)\. (.+)$/gm)].map((m) => m[2]!) : undefined;
-  return { ask, worry: w[1]!.trim(), amount: a ? Number(a[1]!.replace(/,/g, "")) : 100, stated: !!a && !a[2], games, at: Date.now() };
+  return { ask, worry: w[1]!.replace(/\s+/g, " ").trim(), amount: a ? Number(a[1]!.replace(/,/g, "")) : 100, stated: !!a && !a[2], games, at: Date.now() };
 }
 const fmt = (d: Date) => d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
 /** Turn a timeframe answer into words the parser reads exactly (explicit dates, no AI guessing). */
@@ -158,8 +176,17 @@ export async function answer(chat: number, q: Pending, ans: string, send: Send, 
   if (q.ask === "loss") {
     if (NO_LOSS.test(ans.trim())) return reply(VIEW_REPLY(q.worry));
     const amt = amountStated(ans) ? parseAmount(ans).amount : moneyIn(ans);
-    const ok = amt != null && amt > 0 && amt <= 1e6;
-    return respond(chat, short(`${q.worry.replace(/[.\s]+$/, "")}. ${ans.trim()}`), ok ? amt! : q.amount, q.stated || ok, send, now);
+    const ok = amt != null && amt > 0 && amt <= 1e6; const worry = short(`${q.worry.replace(/[.\s]+$/, "")}. ${ans.trim()}`);
+    if (!ok && !q.stated) { const nq = question("amount", worry, q.amount, false); pending.set(chat, { ask: "amount", worry, amount: q.amount, stated: false, at: Date.now() });
+      return send("sendMessage", { chat_id: chat, text: nq.text, parse_mode: "HTML", disable_web_page_preview: true, reply_markup: { inline_keyboard: nq.buttons } }); }
+    return respond(chat, worry, ok ? amt! : q.amount, q.stated || ok, send, now);
+  }
+  if (q.ask === "amount") {
+    const a = ans.trim(); const skip = /^(a:skip|skip|no|none|idk|not sure|don'?t know)$/i.test(a);
+    const n = /^a:(\d+)$/.exec(a) ? Number(a.slice(2)) : moneyIn(a) ?? (/^\$?\s?(\d[\d,]*(?:\.\d+)?)\s*(k|m)?$/i.test(a) ? moneyIn(`$${a.replace(/^\$\s?/, "")}`) : null);
+    const ok = !skip && n != null && n > 0 && n <= 1e6;
+    if (!skip && !ok) return reply(`I couldn't read an amount in "${esc(a)}". Reply to the question with a number like <i>$20,000</i> (up to $1,000,000), or tap Skip.`);
+    return respond(chat, q.worry, ok ? n! : q.amount, true, send, now);
   }
   const pick = /^g:(\d)$/.exec(ans) ?? /^\s*#?(\d)\s*$/.exec(ans);
   const game = pick ? q.games?.[Number(pick[1]) - 1] : null;
@@ -171,7 +198,9 @@ export async function handleUpdate(u: any, send = tg, now = new Date()): Promise
   const cq = u?.callback_query;
   if (cq) {
     const chat = cq.message?.chat?.id; await send("answerCallbackQuery", { callback_query_id: cq.id });
-    const q = readQuestion(cq.message?.text); if (!chat || !q || typeof cq.data !== "string") return null;
+    if (!chat) return null;
+    const q = readQuestion(cq.message?.text);
+    if (!q || typeof cq.data !== "string") { console.warn("[hedge-tg] callback without a readable question", JSON.stringify({ data: cq.data, hasText: !!cq.message?.text })); return send("sendMessage", { chat_id: chat, text: "That button has expired. Please send your worry again." }); }
     if (cq.message?.message_id) await send("editMessageReplyMarkup", { chat_id: chat, message_id: cq.message.message_id, reply_markup: { inline_keyboard: [] } }); // no double taps
     try { return await answer(chat, q, cq.data, send, now); } catch (e) { console.error("[hedge-tg]", (e as Error).message); return send("sendMessage", { chat_id: chat, text: "Hedge hit an error looking that up. Please try again in a moment." }); }
   }
@@ -196,6 +225,7 @@ export async function handleUpdate(u: any, send = tg, now = new Date()): Promise
 export function looksLikeAnswer(q: Pending, text: string): boolean {
   const t = text.trim();
   if (q.ask === "time") return t.length <= 60 && (timeframeIn(t) || /^(no end date|any ?time|whenever|none|idk|not sure)$/i.test(t));
+  if (q.ask === "amount") return t.length <= 40 && (/^\$?\s?\d/.test(t) || /^(skip|none|idk|not sure)$/i.test(t));
   if (q.ask === "game") return t.length <= 60 && (/^\s*#?\d\s*$/.test(t) || timeframeIn(t) || /\b(vs\.?|v|against)\b/i.test(t));
   return t.length <= 200 && (NO_LOSS.test(t) || /\b(i|we|my|our)\b.*\b(own|have|hold|bought|invested|lose|rent|lease|mortgage|staked?|bet)\b/i.test(t) || /^\$?\d/.test(t));
 }

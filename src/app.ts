@@ -7,7 +7,7 @@ import { createFacilitatorConfig } from "@coinbase/x402";
 import { plan, preview, freeMatch, type PlanInput } from "./core/plan.js";
 import { llmAvailable } from "./core/llm.js";
 import { config, paidMode, networks } from "./config.js";
-import { handleUpdate, tgSecret, tgToken } from "./telegram.js";
+import { handleUpdate, tgSecret, tgToken, ensureWebhook } from "./telegram.js";
 
 function parse(b: any): PlanInput | string {
   if (!b || typeof b !== "object") return "Send JSON: {worry, amountAtRisk, maxCost?, candidates?}.";
@@ -34,6 +34,7 @@ export const mirrorChallenge = async (c: any, next: () => Promise<void>) => {
 
 export function createApp() {
   const app = new Hono();
+  if (tgToken() && process.env.VERCEL) void ensureWebhook(); // on cold start: make sure button taps (callback_query) are delivered
   app.get("/", (c) => c.json({
     product: "Hedge", tagline: "Tell it what you're worried about. It finds the market that pays you if it happens, or tells you there isn't one.",
     endpoints: { "POST /v1/plan": `paid (${config.price} USDC via x402${paidMode() ? "" : ", currently in unpaid dev mode"}): {worry, amountAtRisk, maxCost?, candidates?[World markets]}`, "POST /v1/match": "free: {worry, amountAtRisk?, candidates?} → best match + price + cost to cover (no candidates → world_search queries)", "POST /v1/preview": "free: {worry} → parsed worry + world_search queries", "GET /health": "status" },
@@ -42,6 +43,7 @@ export function createApp() {
   app.post("/api/telegram", async (c) => {
     if (!tgToken() || c.req.header("x-telegram-bot-api-secret-token") !== tgSecret()) return c.json({ ok: false }, 401);
     const u = await c.req.json().catch(() => null);
+    await ensureWebhook();
     await handleUpdate(u).catch((e) => console.error("[hedge-tg]", e?.message));
     return c.json({ ok: true });
   });
