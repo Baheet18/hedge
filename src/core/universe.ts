@@ -123,3 +123,10 @@ export async function polymarketDepth(tokenId: string, ask: number, ms = 1200): 
     if (!asks.length) return 0; return asks.filter((a: any) => a.p <= ask + 0.005).reduce((t: number, a: any) => t + a.s, 0);
   } catch { return null; }
 }
+
+/** Polymarket CLOB asks for a token (public). null when not reachable. */
+export async function polymarketBook(tokenId: string, ms = 1200): Promise<Array<{ p: number; s: number }> | null> {
+  try { const d = await getJson(`https://clob.polymarket.com/book?token_id=${encodeURIComponent(tokenId)}`, { ms });
+    return (d.asks ?? []).map((a: any) => ({ p: Number(a.price), s: Number(a.size) })).filter((a: any) => a.p > 0 && a.s > 0);
+  } catch { return null; }
+}

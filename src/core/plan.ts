@@ -1,8 +1,8 @@
 // Orchestration. Venue-agnostic: World (agent-supplied) and Polymarket (searched) candidates are ranked together by fit.
 // World is where PayBox can buy today, so only a World pick gets a world_buy_outcome instruction.
-import { costToCover, type Cost } from "./math.js";
+import { costToCover, costFromBook, type Cost } from "./math.js";
 import { aiRate, finalize, FIT_ORDER, fitLabel, overlap, titleNumbers } from "./fit.js";
-import { normalizeWorldAll, referenceCandidates, polymarketDepth } from "./universe.js";
+import { normalizeWorldAll, referenceCandidates, polymarketBook } from "./universe.js";
 import { getJson } from "./http.js";
 import { understand, looksLikeView } from "./worry.js";
 import type { Candidate, Fit, Worry } from "./types.js";
@@ -33,6 +33,8 @@ export const MIN_TICK = 0.01;
 const BUDGET_MS = Number(process.env.HEDGE_BUDGET_MS ?? 7000);
 const usd = (n: number) => `$${n.toFixed(2)}`;
 const cents = (p: number) => `${Math.round(p * 1000) / 10}¢`;
+/** "8.7¢", or "~9.0¢ avg (best 8.7¢)" when the cover walks the book. */
+export const priceText = (c: Pick<Cost, "price" | "bestPrice">) => (Math.abs(c.price - c.bestPrice) >= 0.0005 ? `~${cents(c.price)} avg (best ${cents(c.bestPrice)})` : cents(c.price));
 
 /** Fixed market-style queries for topics Polymarket words its own way (e.g. Fed meetings are "Fed decision in October"). */
 export function topicQueries(text: string): string[] {
@@ -208,9 +210,12 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   // Polymarket depth for the top reference option (one public CLOB call).
   const topRef = good.find((o) => !o.buyableViaPayBox);
   if (topRef?.cost) { const c = cs.find((x) => x.marketId === topRef.market.marketId); const tok = topRef.side === "YES" ? c?.tokenIds?.yes : c?.tokenIds?.no;
-    const left = BUDGET_MS + 1500 - (Date.now() - t0); const d = tok && left > 500 ? await polymarketDepth(tok, topRef.cost.price, Math.min(1200, left)) : null;
-    if (d === null) topRef.warnings.push("Depth not checked on Polymarket; size at this price may be smaller.");
-    else if (d < topRef.cost.shares && d > 0) { topRef.warnings.push(`Polymarket depth: only about ${Math.floor(d)} shares at this price, so ${usd(Math.floor(d))} of cover; more would cost more.`); topRef.cost = costToCover(topRef.cost.price, amount, maxCost, Math.floor(d)); } }
+    const left = BUDGET_MS + 1500 - (Date.now() - t0); const book = tok && left > 500 ? await polymarketBook(tok, Math.min(1200, left)) : null;
+    const walked = book ? costFromBook(book, amount, maxCost, MAX_PRICE) : null;
+    if (book === null) topRef.warnings.push("Depth not checked on Polymarket; size at this price may be smaller.");
+    else if (!walked) topRef.warnings.push("Polymarket depth: no asks at a usable price on the book right now, so this cover may not fill.");
+    else { topRef.cost = walked;
+      if (walked.liquidityCapped) topRef.warnings.push(`Polymarket depth: only about ${Math.floor(walked.shares)} shares on the book from ${cents(walked.bestPrice)} to ${cents(walked.maxLevel ?? walked.bestPrice)}, so ${usd(walked.payout)} of cover at ~${cents(walked.price)} avg; more would cost more.`); } }
   const aiDegraded = w.parsedBy === "rules" || js.some((j) => j.by !== "ai");
 
   let verdict: Verdict; let headline: string; const next: string[] = []; let execute: Plan["execute"] = null;
@@ -232,7 +237,7 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
     buy(best);
   } else {
     verdict = "hedge_elsewhere";
-    headline = `${lead(best)}Best protection is on Polymarket at ${cents(best.cost!.price)}: buy ${best.side} on "${best.market.title}" there (${best.market.url}). ${usd(best.cost!.cost)} ${share(best).replace(/\.$/, "")} (${best.fit} fit).`;
+    headline = `${lead(best)}Best protection is on Polymarket at ${priceText(best.cost!)}: buy ${best.side} on "${best.market.title}" there (${best.market.url}). ${usd(best.cost!.cost)} ${share(best).replace(/\.$/, "")} (${best.fit} fit).`;
     if (buyableNow) { headline += ` Buyable now through PayBox: ${buyableNow.side} on World "${buyableNow.market.title}" for ${usd(buyableNow.cost!.cost)}, ${share(buyableNow)} (${buyableNow.fit} fit).`; buy(buyableNow); }
     else next.unshift(`Hedge can't buy on Polymarket. Give the user the link (${best.market.url}); nothing on World fits well enough to buy through PayBox.`);
   }
@@ -260,7 +265,7 @@ export async function freeMatch(input: PlanInput, now = new Date()) {
 export function freeView(p: Plan, input: PlanInput) {
   const o = p.buyableNow ?? p.best ?? null;
   const show = (x: Option | null) => x && { venue: x.market.venue, marketId: x.market.marketId, title: x.market.title, side: x.side, fit: x.fit, fitLabel: fitLabel(x.fit).title, buyableViaPayBox: x.buyableViaPayBox,
-    price: x.cost?.price ?? null, costToCover: x.cost?.cost ?? null, payout: x.cost?.payout ?? null, coveragePct: x.cost ? Math.round(x.cost.payout / p.amountAtRisk * 1000) / 10 : null, whatsNotCovered: x.whatsNotCovered, warnings: x.warnings, closeTime: x.market.closeTime, url: x.market.url };
+    price: x.cost?.price ?? null, bestPrice: x.cost?.bestPrice ?? null, priceText: x.cost ? priceText(x.cost) : null, estFees: x.cost?.fees ?? null, shares: x.cost?.shares ?? null, costToCover: x.cost?.cost ?? null, payout: x.cost?.payout ?? null, coveragePct: x.cost ? Math.round(x.cost.payout / p.amountAtRisk * 1000) / 10 : null, whatsNotCovered: x.whatsNotCovered, warnings: x.warnings, closeTime: x.market.closeTime, url: x.market.url };
   const noWorld = !(input.candidates?.length);
   const next: string[] = [];
   if (p.verdict === "not_a_hedge") next.push(...p.next);
