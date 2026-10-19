@@ -3,6 +3,7 @@
 import { costToCover, type Cost } from "./math.js";
 import { aiRate, finalize, FIT_ORDER, fitLabel, overlap, titleNumbers } from "./fit.js";
 import { normalizeWorldAll, referenceCandidates, polymarketDepth } from "./universe.js";
+import { getJson } from "./http.js";
 import { understand, looksLikeView } from "./worry.js";
 import type { Candidate, Fit, Worry } from "./types.js";
 
@@ -70,6 +71,43 @@ export function topicBoost(text: string, c: Candidate, now = new Date()): number
   return b;
 }
 
+// Vague crypto crashes ("Bitcoin crashes this month") have no price level, so nothing ranks the dip markets and the judge
+// sees only upside "reach $X" lines. Assume a drop from today's spot price, say so, and snap it to a listed strike.
+const COINS: Array<[RegExp, string, string]> = [[/\b(bitcoin|btc)\b/i, "Bitcoin", "BTC"], [/\b(ethereum|eth|ether)\b/i, "Ethereum", "ETH"], [/\b(solana|sol)\b/i, "Solana", "SOL"], [/\b(xrp|ripple)\b/i, "XRP", "XRP"], [/\b(dogecoin|doge)\b/i, "Dogecoin", "DOGE"]];
+const CRASH = /\b(crash(es|ed|ing)?|drops?|dropping|dumps?|dumping|falls?|falling|tanks?|tanking|plunges?|plunging|collapses?|collapsing|dips?|goes down|go down|tumbles?|sinks?|bear market)\b/i;
+/** Spot price in USD (Coinbase, then CoinGecko). Null if both fail. */
+export async function spotUsd(sym: string, ms = 1200): Promise<number | null> {
+  try { const d = await getJson(`https://api.coinbase.com/v2/prices/${sym}-USD/spot`, { ms }); const n = Number(d?.data?.amount); if (n > 0) return n; } catch { /* next */ }
+  const id: Record<string, string> = { BTC: "bitcoin", ETH: "ethereum", SOL: "solana", XRP: "ripple", DOGE: "dogecoin" };
+  try { const d = await getJson(`https://api.coingecko.com/api/v3/simple/price?ids=${id[sym]}&vs_currencies=usd`, { ms }); const n = Number(d?.[id[sym]!]?.usd); if (n > 0) return n; } catch { /* none */ }
+  return null;
+}
+/** Crash size by window: ~10% within a week, ~15% within ~6 weeks, ~20% beyond (or no end date). */
+export const crashPct = (deadline: string | null, now = new Date()) => { if (!deadline) return 0.2; const days = (new Date(`${deadline}T23:59:59Z`).getTime() - now.getTime()) / 864e5; return days <= 8 ? 0.1 : days <= 45 ? 0.15 : 0.2; };
+const money = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
+export async function assumeCrashLevel(w: Worry, now = new Date()): Promise<Worry & { assumedLevel?: { coin: string; spot: number; pct: number } }> {
+  if (w.threshold || w.isBet || !CRASH.test(w.text) || w.direction === "above") return w;
+  const coin = COINS.find(([re]) => re.test(w.text)); if (!coin) return w;
+  const spot = await spotUsd(coin[2]);
+  const base = { ...w, direction: "below" as const, category: "crypto" };
+  if (!spot) return { ...base, assumptions: [...(w.assumptions ?? []), `You didn't give a price, so I looked for ${coin[1]} dip markets (today's price wasn't available).`] };
+  const pct = crashPct(w.deadline, now); const step = spot > 1000 ? 1000 : spot > 10 ? 1 : 0.01;
+  const level = Math.round(spot * (1 - pct) / step) * step;
+  return { ...base, threshold: level, unit: "USD", summary: `${coin[1]} falls to ${money(level)} or below${w.deadline ? ` by ${w.deadline}` : ""}`, assumedLevel: { coin: coin[1], spot, pct }, keyTerms: [...new Set([...w.keyTerms, coin[1].toLowerCase(), "dip", "below"])],
+    assumptions: [...(w.assumptions ?? []), `You didn't give a price, so I took a crash as ${coin[1]} falling about ${Math.round(pct * 100)}% from today's ${money(spot)}, to ${money(level)}.`] };
+}
+/** Snap an assumed level to the nearest listed dip strike (within 0.75x–1.08x), so the match isn't marked down for a $1k gap we made up. */
+export function snapLevel(level: number, cs: Candidate[]): number {
+  const ns = cs.filter((c) => /\b(dip|below|less than|under|fall|drop|low)\b/i.test(c.title)).flatMap((c) => titleNumbers(c.title)).filter((n) => n >= level * 0.75 && n <= level * 1.08);
+  if (!ns.length) return level; return ns.sort((a, b) => Math.abs(a - level) - Math.abs(b - level) || a - b)[0]!;
+}
+/** Rank markets on the worry's side: a fall worry prefers dip/below lines over reach/above lines (and vice versa). */
+export function directionBoost(w: Worry, c: Candidate): number {
+  if (w.direction !== "below" && w.direction !== "above") return 0;
+  const down = /\b(dip|below|less than|under|fall|falls|drop|crash|low|lower)\b/i.test(c.title), up = /\b(reach|above|greater than|over|exceed|high|higher|hit \$)\b/i.test(c.title);
+  if (down === up) return 0; return (w.direction === "below") === down ? 0.3 : -0.3;
+}
+
 export async function preview(worry: string) {
   const w = await understand(worry);
   if (w.isBet) return { worry: w, worldSearch: [], next: ["That's a bet, not a hedge. Hedge only finds cover for a loss the user would suffer; don't run hedge_plan for this."] };
@@ -105,7 +143,8 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   if (!input.worry?.trim()) throw new Error("worry is required");
   if (!(amount > 0 && amount <= 1_000_000)) throw new Error("amountAtRisk must be between 0 and 1,000,000 (USD)");
   const text = input.worry.trim().slice(0, 600);
-  const w = await understand(text, now); const tParse = Date.now() - t0;
+  const w0 = await understand(text, now);
+  const w: Worry & { assumedLevel?: { coin: string; spot: number; pct: number } } = w0.isBet ? w0 : await assumeCrashLevel(w0, now); const tParse = Date.now() - t0;
   const base = { worry: w, amountAtRisk: amount, maxCost, disclaimer: "Estimates only. Prices move; fees are estimated (World shows the exact fee at buy). A hedge pays only if the market's rules resolve the way quoted, not whenever you feel the loss." };
   if (w.isBet) return { ...base, verdict: "not_a_hedge", headline: "That's a bet, not a hedge. What loss are you protecting? If you already bought tickets, have a job, trip or savings that this outcome hurts, tell me the loss and the amount and I'll find cover for that (e.g. \"I booked a non-refundable $300 trip to the Lakers' next-round game, and lose it if they don't advance\").", best: null, buyableNow: null, alternatives: [], execute: null,
     next: ["Don't buy anything. Ask the user what loss they're protecting (tickets already bought, a job, a trip, savings) and how much; then call hedge_match with that worry."], searched: { world: 0, polymarket: 0 }, aiDegraded: w.parsedBy !== "ai", warnings, ms: Date.now() - t0 };
@@ -115,7 +154,7 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
     return ns.length ? Math.max(0, 0.5 - Math.min(...ns.map((n) => Math.abs(n - w.threshold!) / w.threshold!))) : 0; };
   const topical = topicQueries(w.text);
   const inWin = (c: { closeTime: string | null }) => inWindow(w, c.closeTime, now);
-  const score = (c: Candidate) => { const o = overlap(w, c) + topicBoost(w.text, c, now); return o > 0 ? o + near(c) + (inWin(c) ? 0.25 : 0) : 0; };
+  const score = (c: Candidate) => { const o = overlap(w, c) + topicBoost(w.text, c, now); return o > 0 ? Math.max(0.01, o + near(c) + (inWin(c) ? 0.25 : 0) + directionBoost(w, c)) : 0; };
   const worldAll = (input.candidates ?? []).flatMap(normalizeWorldAll);
   if ((input.candidates?.length ?? 0) && !worldAll.length) warnings.push("None of the World candidates had an id and title.");
   if (worldAll.some((c) => !c.rules)) warnings.push("Some World candidates had no rules: call world_get_events / world_get_markets for them, or they can't rate above loose.");
@@ -128,6 +167,9 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   const queries = [...new Set([...topical, ...monthQ, ...(w.searchQueries.length ? w.searchQueries : [w.subject]).slice(0, 2), ...(core ? [core] : []), ...(topic ? [topic] : [])].map((q) => q.toLowerCase()))].slice(0, 4 + Math.min(1, monthQ.length));
   const poly = input.skipReference ? { candidates: [], warnings: [] as string[] } : await referenceCandidates(queries, score, PER_VENUE, Math.min(2200, Math.max(1200, BUDGET_MS - 2500 - (Date.now() - t0))));
   warnings.push(...poly.warnings);
+  if (w.assumedLevel && w.threshold) { const lv = snapLevel(w.threshold, [...worldAll, ...poly.candidates]);
+    if (lv !== w.threshold) { const { coin, spot } = w.assumedLevel; const pct = Math.round((1 - lv / spot) * 100); w.threshold = lv; w.summary = w.summary.replace(/\$[\d,]+/, money(lv));
+      w.assumptions = [...(w.assumptions ?? []).filter((a) => !a.startsWith("You didn't give a price")), `You didn't give a price, so I took a crash as ${coin} falling about ${pct}% from today's ${money(spot)}, to ${money(lv)} (the nearest listed level).`]; } }
   if (!input.skipReference) console.log("[hedge] polymarket", JSON.stringify({ queries, hits: poly.candidates.length, top: poly.candidates.slice(0, 3).map((c) => c.title), warnings: poly.warnings }));
   if (!worldAll.length) warnings.push("No World markets were supplied, so nothing here is buyable through PayBox yet. Run world_search with the preview queries and pass the results as candidates.");
   const cs = [...world, ...poly.candidates];

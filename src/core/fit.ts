@@ -109,7 +109,7 @@ export function codeChecks(w: Worry, c: Candidate, j: FitJudgement, now = new Da
     }
   }
   if (/\b(and will|combined outcome|parlay)\b/i.test(`${c.title} ${c.rules.slice(0, 300)}`) && FIT_ORDER[fit] > FIT_ORDER.loose) { fit = "loose"; gaps.unshift("Combined market: it also needs a second, unrelated event to happen before it pays."); }
-  if (!/\b(exactly|between)\b/i.test(w.text) && /\bexactly\b|\bbetween\b[^?.]*\band\b|\d\s*[-–]\s*\$?\d/i.test(c.title)) {
+  if (!/\b(exactly|between)\b/i.test(w.text) && /\bexactly\b|\bbetween\b[^?.]*\band\b|\$\d[\d,.]*k?\s*[-–]\s*\$?\d|\d[\d,.]*k\s*[-–]\s*\$?\d|\d\s*%?\s*[-–]\s*\d+(\.\d+)?\s*%/i.test(c.title)) { // price/percent buckets, not date ranges like "October 19-25"
     if (FIT_ORDER[fit] > FIT_ORDER.loose) fit = "loose"; gaps.unshift("Partial cover: it pays only if the result lands in this one bucket. Results outside this bucket aren't covered unless you buy every bucket.");
   }
   // AI said exact but listed a timing/place/definition gap: that's not exact.

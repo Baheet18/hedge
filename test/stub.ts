@@ -1,9 +1,11 @@
 // Offline stubs for Gemini and Polymarket.
 export type Gem = { parse?: object; judge?: (prompt: string, system: string) => object };
-export function stubFetch(o: { gemini?: Gem; poly?: any[] }) {
+export function stubFetch(o: { gemini?: Gem; poly?: any[]; spot?: number }) {
   const real = globalThis.fetch;
   globalThis.fetch = (async (url: any, init: any) => {
     const u = String(url);
+    if (u.includes("api.coinbase.com") && o.spot) return new Response(JSON.stringify({ data: { amount: String(o.spot), base: "BTC", currency: "USD" } }), { status: 200 });
+    if (u.includes("api.coinbase.com") || u.includes("api.coingecko.com")) return new Response("{}", { status: 503 });
     if (u.includes("gamma-api.polymarket.com")) return new Response(JSON.stringify({ events: o.poly ?? [] }), { status: 200 });
     if (u.includes("generativelanguage")) {
       if (!o.gemini) return new Response("{}", { status: 429 });
