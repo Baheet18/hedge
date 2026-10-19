@@ -87,6 +87,14 @@ export function normalizeWorld(input: any): Candidate | null {
   };
 }
 
+/** Polymarket's per-market taker fee from Gamma: feesEnabled + feeSchedule { rate, exponent } (fee = C × rate × (p(1−p))^exponent).
+ *  feesEnabled false → "none"; missing or no usable schedule → "unknown" (we then show cost without fees, not a guess). */
+export function polymarketFee(m: any): import("./math.js").FeeModel {
+  if (m?.feesEnabled === false) return "none";
+  const r = Number(m?.feeSchedule?.rate), e = Number(m?.feeSchedule?.exponent ?? 1);
+  if (m?.feesEnabled === true && Number.isFinite(r) && r >= 0 && r < 1 && Number.isFinite(e) && e > 0) return r === 0 ? "none" : { rate: r, exponent: e, source: `polymarket ${m.feeType ?? "feeSchedule"}` };
+  return "unknown";
+}
 export async function polymarketSearch(q: string, ms = 2500): Promise<Candidate[]> {
   const d = await getJson(`https://gamma-api.polymarket.com/public-search?q=${encodeURIComponent(q)}&limit_per_type=6&events_status=active`, { ms });
   const out: Candidate[] = [];
@@ -99,7 +107,7 @@ export async function polymarketSearch(q: string, ms = 2500): Promise<Candidate[
     const yesAsk = price(m.bestAsk) ?? yes; const yesBid = price(m.bestBid);
     out.push({ source: "reference", venue: "polymarket", marketId: String(m.slug ?? m.id), title: String(m.question ?? e.title), rules: String(m.description ?? e.description ?? "").slice(0, 4000),
       closeTime: end, yesAsk, noAsk: yesBid !== null ? Math.min(1, 1 - yesBid) : no, yesBid, noBid: yesAsk !== null ? 1 - yesAsk : null,
-      yesMint: null, noMint: null, url: `https://polymarket.com/event/${e.slug}`, sources: m.resolutionSource ? [String(m.resolutionSource)] : [], askQty: { yes: null, no: null }, tokenIds: { yes: tok[0] ?? null, no: tok[1] ?? null } });
+      yesMint: null, noMint: null, url: `https://polymarket.com/event/${e.slug}`, sources: m.resolutionSource ? [String(m.resolutionSource)] : [], askQty: { yes: null, no: null }, tokenIds: { yes: tok[0] ?? null, no: tok[1] ?? null }, fee: polymarketFee(m) });
   }
   return out;
 }

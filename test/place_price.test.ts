@@ -17,7 +17,7 @@ test("price: the 9:22 numbers — 8.7¢ × 764 + est. fees = $70.75, and the car
   const c = costToCover(0.087, 10000, null, 764);
   assert.equal(c.cost, 70.75); assert.equal(c.shares, 764); assert.equal(c.fees, Math.round(764 * feePerShare(0.087) * 100) / 100);
   assert.ok(Math.abs(c.cost - (c.shares * c.price + c.fees)) < 0.01, "cost = shares × price + fees");
-  const t = card({ verdict: "hedge_elsewhere", match: { venue: "polymarket", title: "Will the DFM Real Estate Index dip to 8,000 in 2026?", side: "YES", fit: "loose", price: 0.087, bestPrice: 0.087, priceText: "8.7¢", estFees: c.fees, costToCover: c.cost, payout: c.payout, coveragePct: 7.6, url: "u", whatsNotCovered: [], warnings: [] } }, 10000).text;
+  const t = card({ verdict: "hedge_elsewhere", match: { venue: "polymarket", title: "Will the DFM Real Estate Index dip to 8,000 in 2026?", side: "YES", fit: "loose", price: 0.087, bestPrice: 0.087, priceText: "8.7¢", estFees: c.fees, fees: c.fees, feeSource: c.feeSource, costToCover: c.cost, payout: c.payout, coveragePct: 7.6, url: "u", whatsNotCovered: [], warnings: [] } }, 10000).text;
   assert.match(t, /buy <b>YES<\/b> at 8\.7¢/); assert.match(t, /Cost <b>\$70\.75<\/b> \(incl\. ~\$4\.2\d est\. fees\) → pays <b>\$764\.00<\/b>/);
 });
 
@@ -32,7 +32,7 @@ test("price: walking the book gives the average fill (price), best ask (bestPric
   assert.equal(costFromBook([], 100), null);
 });
 
-const dfm = { slug: "dfm", title: "DFM", endDate: "2027-01-01T00:00:00Z", markets: [{ id: "d", slug: "dfm-8000", question: "Will the DFM Real Estate Index dip to 8,000 in 2026?", description: "Resolves Yes if the Dubai Financial Market Real Estate Index trades at or below 8,000 in 2026.", bestAsk: 0.087, bestBid: 0.08, outcomePrices: "[\"0.087\",\"0.913\"]", clobTokenIds: "[\"TYES\",\"TNO\"]", endDate: "2027-01-01T00:00:00Z", active: true, closed: false }] };
+const dfm = { slug: "dfm", title: "DFM", endDate: "2027-01-01T00:00:00Z", markets: [{ id: "d", slug: "dfm-8000", question: "Will the DFM Real Estate Index dip to 8,000 in 2026?", description: "Resolves Yes if the Dubai Financial Market Real Estate Index trades at or below 8,000 in 2026.", bestAsk: 0.087, bestBid: 0.08, outcomePrices: "[\"0.087\",\"0.913\"]", clobTokenIds: "[\"TYES\",\"TNO\"]", endDate: "2027-01-01T00:00:00Z", active: true, closed: false, feesEnabled: true, feeType: "finance_fees", feeSchedule: { exponent: 1, rate: 0.04, takerOnly: true, rebateRate: 0.25 } }] };
 const parse = { summary: "Real estate prices crash", category: "macro", subject: "real estate prices", direction: "happens", threshold: null, unit: null, location: "Lagos", deadline: "2026-12-31", windowStart: null, searchQueries: ["real estate index", "property prices"], keyTerms: ["real estate", "index"], isBet: false };
 const judge = () => ({ ratings: [{ index: 0, fit: "close", side: "YES", covered: "Pays if the index dips.", quote: null, gaps: [] }] });
 const book = (asks: Array<[string, string]>) => { const f = globalThis.fetch; globalThis.fetch = (async (u: any, i: any) => String(u).includes("clob.polymarket.com") ? new Response(JSON.stringify({ asks: asks.map(([price, size]) => ({ price, size })) })) : f(u, i)) as any; return () => { globalThis.fetch = f; }; };
@@ -44,7 +44,7 @@ test("price: free match + card quote the average fill when the cover walks the b
     assert.ok(Math.abs(m.costToCover - m.shares * m.price - m.estFees) < 0.02, "cost = shares × avg price + fees");
     assert.match(m.priceText, /^~9\.\d¢ avg \(best 8\.7¢\)$/); assert.match(f.headline, /at ~9\.\d¢ avg \(best 8\.7¢\)/);
     assert.match(m.warnings.join(" "), /only about 1464 shares on the book from 8\.7¢ to 11¢, so \$1464\.00 of cover at ~9\.\d¢ avg/);
-    const t = card(f, 10000).text; assert.match(t, /buy <b>YES<\/b> at ~9\.\d¢ avg \(best 8\.7¢\)/); assert.match(t, /incl\. ~\$\d+\.\d\d est\. fees/);
+    const t = card(f, 10000).text; assert.match(t, /buy <b>YES<\/b> at ~9\.\d¢ avg \(best 8\.7¢\)/); assert.match(t, /incl\. ~\$\d+\.\d\d fees\)/); assert.equal(m.feeSource, "polymarket finance_fees");
   } finally { unbook(); restore(); }
 }));
 

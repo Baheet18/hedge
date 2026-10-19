@@ -73,7 +73,9 @@ export function card(r: any, amount: number): { text: string; buttons: any[][] }
   lines.push("", `<b>${esc(m.title)}</b>`, `${m.venue === "world" ? "World (Solana)" : "Polymarket"} · buy <b>${esc(m.side)}</b> at ${esc(m.priceText ?? `${Math.round(m.price * 1000) / 10}¢`)}`);
   if (m.costToCover != null) {
     const unverified = (m.warnings ?? []).some((w: string) => /^(Size not checked|Depth not checked)/.test(w));
-    lines.push(`Cost <b>${usd(m.costToCover)}</b>${m.estFees >= 0.01 ? ` (incl. ~${usd(m.estFees)} est. fees)` : ""} → pays <b>${usd(m.payout)}</b> if it happens`);
+    const fees = m.fees ?? m.estFees ?? 0;
+    const feeNote = m.feeSource === "unknown" ? " (fees not included)" : fees > 0 ? ` (incl. ~${usd(fees)} ${m.feeSource === "estimate" ? "est. fees" : "fees"})` : "";
+    lines.push(`Cost <b>${usd(m.costToCover)}</b>${feeNote} → pays <b>${usd(m.payout)}</b> if it happens`);
     lines.push(unverified ? `Covers up to ${usd(m.payout)} of your ${usd(amount)} (size unverified)` : `Covers ${usd(m.payout)} of your ${usd(amount)} (${m.coveragePct}%)`);
   }
   lines.push(`Fit: <b>${esc(m.fit)}</b>`);

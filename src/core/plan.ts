@@ -147,7 +147,7 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   const text = input.worry.trim().slice(0, 600);
   const w0 = await understand(text, now);
   const w: Worry & { assumedLevel?: { coin: string; spot: number; pct: number } } = w0.isBet ? w0 : await assumeCrashLevel(w0, now); const tParse = Date.now() - t0;
-  const base = { worry: w, amountAtRisk: amount, maxCost, disclaimer: "Estimates only. Prices move; fees are estimated (World shows the exact fee at buy). A hedge pays only if the market's rules resolve the way quoted, not whenever you feel the loss." };
+  const base = { worry: w, amountAtRisk: amount, maxCost, disclaimer: "Estimates only. Prices move; Polymarket fees use each market's own taker fee schedule, World fees are estimated (World shows the exact fee at buy). A hedge pays only if the market's rules resolve the way quoted, not whenever you feel the loss." };
   if (w.isBet) return { ...base, verdict: "not_a_hedge", headline: "That's a bet, not a hedge. What loss are you protecting? If you already bought tickets, have a job, trip or savings that this outcome hurts, tell me the loss and the amount and I'll find cover for that (e.g. \"I booked a non-refundable $300 trip to the Lakers' next-round game, and lose it if they don't advance\").", best: null, buyableNow: null, alternatives: [], execute: null,
     next: ["Don't buy anything. Ask the user what loss they're protecting (tickets already bought, a job, a trip, savings) and how much; then call hedge_match with that worry."], searched: { world: 0, polymarket: 0 }, aiDegraded: w.parsedBy !== "ai", warnings, ms: Date.now() - t0 };
 
@@ -182,7 +182,7 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
     const avail = side === "YES" ? c.askQty.yes : c.askQty.no;
     let cost: Cost | null = null;
     if (p !== null && p > 0 && p < 1) {
-      cost = costToCover(p, amount, maxCost, avail);
+      cost = costToCover(p, amount, maxCost, avail, c.fee);
       if (c.source === "world" && avail === null) ow.push("Size not checked: run world_orderbook for this market to confirm the cover is available at this price.");
       if (cost.liquidityCapped) ow.push(`Only ${usd(cost.payout)} of cover is available at this price (${avail} shares at the ask); more would cost more.`);
       if (cost.capped) ow.push(`Your ${usd(maxCost!)} cap buys ${Math.round(cost.coverage * 100)}% of the cover.`);
@@ -211,7 +211,7 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   const topRef = good.find((o) => !o.buyableViaPayBox);
   if (topRef?.cost) { const c = cs.find((x) => x.marketId === topRef.market.marketId); const tok = topRef.side === "YES" ? c?.tokenIds?.yes : c?.tokenIds?.no;
     const left = BUDGET_MS + 1500 - (Date.now() - t0); const book = tok && left > 500 ? await polymarketBook(tok, Math.min(1200, left)) : null;
-    const walked = book ? costFromBook(book, amount, maxCost, MAX_PRICE) : null;
+    const walked = book ? costFromBook(book, amount, maxCost, MAX_PRICE, c?.fee) : null;
     if (book === null) topRef.warnings.push("Depth not checked on Polymarket; size at this price may be smaller.");
     else if (!walked) topRef.warnings.push("Polymarket depth: no asks at a usable price on the book right now, so this cover may not fill.");
     else { topRef.cost = walked;
@@ -265,7 +265,7 @@ export async function freeMatch(input: PlanInput, now = new Date()) {
 export function freeView(p: Plan, input: PlanInput) {
   const o = p.buyableNow ?? p.best ?? null;
   const show = (x: Option | null) => x && { venue: x.market.venue, marketId: x.market.marketId, title: x.market.title, side: x.side, fit: x.fit, fitLabel: fitLabel(x.fit).title, buyableViaPayBox: x.buyableViaPayBox,
-    price: x.cost?.price ?? null, bestPrice: x.cost?.bestPrice ?? null, priceText: x.cost ? priceText(x.cost) : null, estFees: x.cost?.fees ?? null, shares: x.cost?.shares ?? null, costToCover: x.cost?.cost ?? null, payout: x.cost?.payout ?? null, coveragePct: x.cost ? Math.round(x.cost.payout / p.amountAtRisk * 1000) / 10 : null, whatsNotCovered: x.whatsNotCovered, warnings: x.warnings, closeTime: x.market.closeTime, url: x.market.url };
+    price: x.cost?.price ?? null, bestPrice: x.cost?.bestPrice ?? null, priceText: x.cost ? priceText(x.cost) : null, estFees: x.cost?.fees ?? null, fees: x.cost?.fees ?? null, feeSource: x.cost?.feeSource ?? null, shares: x.cost?.shares ?? null, costToCover: x.cost?.cost ?? null, payout: x.cost?.payout ?? null, coveragePct: x.cost ? Math.round(x.cost.payout / p.amountAtRisk * 1000) / 10 : null, whatsNotCovered: x.whatsNotCovered, warnings: x.warnings, closeTime: x.market.closeTime, url: x.market.url };
   const noWorld = !(input.candidates?.length);
   const next: string[] = [];
   if (p.verdict === "not_a_hedge") next.push(...p.next);
