@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { handleUpdate, question } from "../src/telegram.js";
+import { groundThreshold, rulesParse, regexParse } from "../src/core/worry.js";
 import { freeMatch, snapLevel, crashPct, directionBoost } from "../src/core/plan.js";
 import { stubFetch, polyEvent } from "./stub.js";
 
@@ -60,3 +61,20 @@ test("crash helpers: window-sized drop, snap to a listed dip strike, rank dips o
   assert.ok(directionBoost(w, { title: "Will Bitcoin dip to $70,000 in October?" } as any) > 0); assert.ok(directionBoost(w, { title: "Will Bitcoin reach $150,000 in October?" } as any) < 0);
   assert.equal(directionBoost({ direction: "happens" } as any, { title: "Will Bitcoin reach $150,000?" } as any), 0);
 });
+
+test("regression: the AI inventing a level ($50,000, or the $100 cover amount) is dropped, so the crash level is assumed and stated", () => withKey(async () => {
+  const w = (text: string, threshold: number) => ({ ...rulesParse(text, NOW), text, threshold, direction: "below" as const });
+  assert.equal(groundThreshold(w("I'm worried Bitcoin crashes this week", 50000)).threshold, null);
+  assert.equal(groundThreshold(w("I'm worried Bitcoin crashes this month, cover $100", 100)).threshold, null);
+  assert.equal(groundThreshold(w("Bitcoin drops below $55k this month, cover $100", 55000)).threshold, 55000);
+  assert.equal(groundThreshold(w("naira passes 2,000 per dollar", 2000)).threshold, 2000);
+  assert.equal(groundThreshold({ ...w("the Fed hikes twice", 2), direction: "happens" }).threshold, 2, "only price levels are grounded");
+  assert.equal(regexParse("I'm worried Bitcoin crashes this month, cover $100", NOW), null, "the cover amount isn't a price level ('cover' isn't 'over')");
+  assert.equal(regexParse("Bitcoin drops below $55k, cover $100", NOW)!.threshold, 55000);
+  for (const invented of [50000, 100]) {
+    const restore = stubFetch({ poly: [weekly, monthly, yearly], spot: SPOT, gemini: { parse: { ...parse("2026-10-31"), threshold: invented, direction: "below" }, judge } });
+    try { const f = await freeMatch({ worry: "I'm worried Bitcoin crashes this month, cover $100", amountAtRisk: 100 }, NOW);
+      assert.match(f.match!.title, /dip to \$70,000 in October/, `${invented}: ${f.headline}`); assert.match(f.worry.assumptions.join(" "), /didn't give a price/);
+    } finally { restore(); }
+  }
+}));

@@ -40,7 +40,20 @@ export function timeframeIn(text: string): boolean { return MONTH_WORD.test(text
 const SCHEDULED = /\b(elections?|midterms?|primary|referendum|vote|(fed|fomc) (meeting|decision)|rate decision|cpi|jobs report|payrolls|earnings|final|playoffs?|super bowl|world cup|game|match|fight|halving|launch|release)\b/i;
 const fmtDate = (d: string) => new Date(`${d}T12:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 /** Never invent end dates: an AI deadline the user didn't give is dropped (open-ended worry) or, for a scheduled event, kept and stated as an assumption. */
-export function ground(w: Worry): Worry {
+/** Numbers the user actually wrote, excluding the amount they want covered ("cover $100"): 55k → 55000, 1.5m → 1500000, 2,000 → 2000. */
+export const stripAmount = (text: string) => text.replace(/[,;]?\s*\b(cover|insure|protect|hedge|lose|risking|at risk of|invest(ed)?)\s+(me\s+)?(up to\s+)?\$?\s?\d[\d,]*(\.\d+)?\s*k?\b/gi, " ");
+export function statedNumbers(text: string): number[] {
+  const t = stripAmount(text);
+  return [...t.matchAll(/(\d[\d,]*(?:\.\d+)?)\s*(k|m|bn|b)?\b/gi)].map((m) => Number(m[1]!.replace(/,/g, "")) * ({ k: 1e3, m: 1e6, b: 1e9, bn: 1e9 } as Record<string, number>)[(m[2] ?? "").toLowerCase()]! || Number(m[1]!.replace(/,/g, ""))).filter((n) => n > 0);
+}
+/** Never invent a price level either: an AI threshold the user didn't write (e.g. "$50,000" for "Bitcoin crashes") is dropped. */
+export function groundThreshold(w: Worry): Worry {
+  if (w.threshold == null || (w.direction !== "above" && w.direction !== "below")) return w;
+  const ok = statedNumbers(w.text).some((n) => Math.abs(n - w.threshold!) / Math.max(1e-9, Math.abs(w.threshold!)) < 0.005);
+  return ok ? w : { ...w, threshold: null, unit: null };
+}
+export function ground(w0: Worry): Worry {
+  const w = groundThreshold(w0);
   if (/\b(no end date|any ?time|whenever|no deadline)\b/i.test(w.text)) return { ...w, deadline: null, windowStart: null, timeframeGiven: true, assumptions: ["No end date: cover runs only until the market closes."] };
   if (timeframeIn(w.text)) return { ...w, timeframeGiven: true, assumptions: [] };
   const assumptions: string[] = [];
@@ -85,12 +98,12 @@ const ASSETS: Array<[RegExp, string, string[]]> = [
 ];
 /** Simple "<asset> drops below / rises above <number>" worries need no AI to parse. Returns null when unsure. */
 export function regexParse(text: string, now = new Date()): Worry | null {
-  const t = text.toLowerCase().replace(/(\d),(\d{3})/g, "$1$2");
+  const t = stripAmount(text).toLowerCase().replace(/(\d),(\d{3})/g, "$1$2").trim(); // "cover $100" is the amount, not a price level
   if (t.length > 160 || /\b(if|unless|and|or|while|during|trip|wedding|job|my|before|by|after|until)\b/.test(t.replace(/^(i'm |i am )?(worried|scared|afraid)( that)?\s*/, ""))) return null;
   const a = ASSETS.find(([re]) => re.test(t)); if (!a) return null;
   const m = /\b(drops?|falls?|crash(es)?|dips?|goes|sinks?|below|under|rises?|above|over|hits?|passes|exceeds?)\b[^\d$]{0,20}\$?\s?(\d+(?:\.\d+)?)\s*(k|m)?\b/.exec(t); if (!m) return null;
   const threshold = Number(m[3]) * (m[4] === "k" ? 1e3 : m[4] === "m" ? 1e6 : 1);
-  const below = /drop|fall|crash|dip|sink|below|under/.test(m[0]) && !/above|over|rise|exceed/.test(m[0]);
+  const below = /drop|fall|crash|dip|sink|below|under/.test(m[0]) && !/\b(above|over|rises?|exceeds?)\b/.test(m[0]);
   if (/goes|hits?|passes/.test(m[0]) && !/below|under|above|over/.test(m[0])) return null;
   const dir = below ? "below" : "above"; const n = threshold.toLocaleString("en-US");
   return { ...rulesParse(text, now), text, summary: `${a[1][0]!.toUpperCase()}${a[1].slice(1)} ${below ? "falls below" : "rises above"} $${n}`, category: "crypto", subject: `${a[1]} price`,
