@@ -34,7 +34,6 @@ export const mirrorChallenge = async (c: any, next: () => Promise<void>) => {
 
 export function createApp() {
   const app = new Hono();
-  if (tgToken() && process.env.VERCEL) void ensureWebhook(); // on cold start: make sure button taps (callback_query) are delivered
   app.get("/", (c) => c.json({
     product: "Hedge", tagline: "Tell it what you're worried about. It finds the market that pays you if it happens, or tells you there isn't one.",
     endpoints: { "POST /v1/plan": `paid (${config.price} USDC via x402${paidMode() ? "" : ", currently in unpaid dev mode"}): {worry, amountAtRisk, maxCost?, candidates?[World markets]}`, "POST /v1/match": "free: {worry, amountAtRisk?, candidates?} → best match + price + cost to cover (no candidates → world_search queries)", "POST /v1/preview": "free: {worry} → parsed worry + world_search queries", "GET /health": "status" },
@@ -47,7 +46,12 @@ export function createApp() {
     await handleUpdate(u).catch((e) => console.error("[hedge-tg]", e?.message));
     return c.json({ ok: true });
   });
-  app.get("/health", (c) => c.json({ ok: true, paid: paidMode(), network: config.network, networks: networks(), price: config.price, ai: llmAvailable() }));
+  app.get("/health", async (c) => {
+    // Once per instance: make sure Telegram delivers button taps (callback_query); awaited, since Vercel freezes work after the response.
+    const wh: any = tgToken() ? await ensureWebhook() : null;
+    const tgButtons = !wh ? "unknown" : wh.fixed ? "fixed" : (wh.info?.allowed_updates ?? []).length === 0 || wh.info.allowed_updates.includes("callback_query") ? "ok" : "not delivered";
+    return c.json({ ok: true, paid: paidMode(), network: config.network, networks: networks(), price: config.price, ai: llmAvailable(), ...(tgToken() ? { tgButtons } : {}) });
+  });
   if (paidMode()) {
     const fc = config.facilitatorUrl ? new HTTPFacilitatorClient({ url: config.facilitatorUrl }) : new HTTPFacilitatorClient(createFacilitatorConfig(config.cdpKeyId, config.cdpKeySecret));
     const rs = new x402ResourceServer(fc);
