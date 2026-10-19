@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { plan, freeView, type Plan } from "./core/plan.js";
 import { fitLabel } from "./core/fit.js";
-import { understand, timeframeIn, looksLikeView, SPORTS } from "./core/worry.js";
+import { understand, timeframeIn, looksLikeView, SPORTS, needsPlace } from "./core/worry.js";
 
 const API = "https://api.telegram.org";
 export const tgToken = () => process.env.HEDGE_TG_BOT_TOKEN || "";
@@ -70,10 +70,10 @@ export function card(r: any, amount: number): { text: string; buttons: any[][] }
   }
   const label = fitLabel(m.fit);
   lines.push(`${label.icon} <b>${label.title}</b>`);
-  lines.push("", `<b>${esc(m.title)}</b>`, `${m.venue === "world" ? "World (Solana)" : "Polymarket"} · buy <b>${esc(m.side)}</b> at ${Math.round(m.price * 1000) / 10}¢`);
+  lines.push("", `<b>${esc(m.title)}</b>`, `${m.venue === "world" ? "World (Solana)" : "Polymarket"} · buy <b>${esc(m.side)}</b> at ${esc(m.priceText ?? `${Math.round(m.price * 1000) / 10}¢`)}`);
   if (m.costToCover != null) {
     const unverified = (m.warnings ?? []).some((w: string) => /^(Size not checked|Depth not checked)/.test(w));
-    lines.push(`Cost <b>${usd(m.costToCover)}</b> → pays <b>${usd(m.payout)}</b> if it happens`);
+    lines.push(`Cost <b>${usd(m.costToCover)}</b>${m.estFees >= 0.01 ? ` (incl. ~${usd(m.estFees)} est. fees)` : ""} → pays <b>${usd(m.payout)}</b> if it happens`);
     lines.push(unverified ? `Covers up to ${usd(m.payout)} of your ${usd(amount)} (size unverified)` : `Covers ${usd(m.payout)} of your ${usd(amount)} (${m.coveragePct}%)`);
   }
   lines.push(`Fit: <b>${esc(m.fit)}</b>`);
@@ -89,15 +89,16 @@ export function card(r: any, amount: number): { text: string; buttons: any[][] }
 }
 
 // ---------- follow-up questions ----------
-export type Ask = "time" | "loss" | "amount" | "game";
+export type Ask = "time" | "loss" | "amount" | "place" | "game";
 interface Pending { ask: Ask; worry: string; amount: number; stated: boolean; games?: string[]; at: number }
 const pending = new Map<number, Pending>();
-const HEAD: Record<Ask, string> = { time: "⏳ <b>By when?</b>", loss: "🧭 <b>What would you actually lose?</b>", amount: "💵 <b>How much would you lose?</b>", game: "🏀 <b>Which game?</b>" };
-const MARK = { time: "By when?", loss: "What would you actually lose?", amount: "How much would you lose?", game: "Which game?" } as const;
+const HEAD: Record<Ask, string> = { time: "⏳ <b>By when?</b>", loss: "🧭 <b>What would you actually lose?</b>", amount: "💵 <b>How much would you lose?</b>", place: "📍 <b>Where is it?</b>", game: "🏀 <b>Which game?</b>" };
+const MARK = { time: "By when?", loss: "What would you actually lose?", amount: "How much would you lose?", place: "Where is it?", game: "Which game?" } as const;
 
 /** The question text carries the pending worry and amount, so no server state is needed. */
 export function question(ask: Ask, worry: string, amount: number, stated: boolean, games: string[] = []): { text: string; buttons: any[][] } {
   const body = ask === "time" ? "This week, this month, by end of year? Tap one, or reply to this message with your own date. I won't guess one."
+    : ask === "place" ? "The city or country, e.g. Lagos, Dubai, Miami. Reply to this message with it, so I match markets for that place."
     : ask === "amount" ? "In US dollars, roughly, if it happens? Tap one or reply with a number, e.g. <i>$20,000</i>. That's the amount I'll price cover for."
     : ask === "loss" ? "That sounds like a view about what will happen. Hedge covers a loss you'd suffer. Do you own the asset or property, or have money riding on it? How much? Reply to this message, e.g. <i>I own a $200k flat in Lagos</i>."
     : "More than one market fits. Which one is your bet on? Tap it, or reply with the date or opponent.";
@@ -105,6 +106,7 @@ export function question(ask: Ask, worry: string, amount: number, stated: boolea
   const text = [HEAD[ask], body, ...(list.length ? ["", ...list] : []), "", `Worry: ${esc(worry)}`, `Amount: ${usd(amount)}${stated ? "" : " (default; say \"cover $X\" to change)"}`].join("\n");
   const buttons = ask === "time" ? [[{ text: "This week", callback_data: "t:week" }, { text: "This month", callback_data: "t:month" }], [{ text: "End of year", callback_data: "t:year" }, { text: "No end date", callback_data: "t:any" }]]
     : ask === "loss" ? [[{ text: "Nothing, it's just my view", callback_data: "v:view" }]]
+    : ask === "place" ? [[{ text: "It's not tied to one place", callback_data: "p:none" }]]
     : ask === "amount" ? [[{ text: "$1,000", callback_data: "a:1000" }, { text: "$10,000", callback_data: "a:10000" }, { text: "$100,000", callback_data: "a:100000" }], [{ text: "Skip (use $100)", callback_data: "a:skip" }]]
     : games.slice(0, 4).map((g, i) => [{ text: `${i + 1}. ${g.length > 48 ? `${g.slice(0, 47)}…` : g}`, callback_data: `g:${i + 1}` }]);
   return { text, buttons };
@@ -112,7 +114,7 @@ export function question(ask: Ask, worry: string, amount: number, stated: boolea
 /** Read a pending question back from the bot's own message text. */
 export function readQuestion(text: string | undefined): Pending | null {
   if (!text) return null;
-  const ask: Ask | null = text.includes(MARK.time) ? "time" : text.includes(MARK.loss) ? "loss" : text.includes(MARK.amount) ? "amount" : text.includes(MARK.game) ? "game" : null;
+  const ask: Ask | null = text.includes(MARK.time) ? "time" : text.includes(MARK.loss) ? "loss" : text.includes(MARK.amount) ? "amount" : text.includes(MARK.place) ? "place" : text.includes(MARK.game) ? "game" : null;
   const w = /^Worry: ([\s\S]+?)\s*\n\s*Amount: /m.exec(text) ?? /^Worry: (.+)$/m.exec(text); // a worry may span lines
   const a = /^Amount: \$([\d,]+(?:\.\d+)?)( \(default)?/m.exec(text);
   if (!ask || !w) return null;
@@ -159,6 +161,7 @@ export async function respond(chat: number, worry: string, amount: number, state
   if (w.isBet) return reply(card({ verdict: "not_a_hedge" }, amount).text);
   if (looksLikeView(worry, stated)) return ask("loss");
   const sports = w.category === "sports" || SPORTS.test(worry);
+  if (!sports && needsPlace(worry, w)) return ask("place");
   if (!sports && !timeframeIn(worry)) return ask("time");
   let p = await plan({ worry, amountAtRisk: amount }, now);
   if (p.aiDegraded && p.verdict !== "not_a_hedge") { await send("sendChatAction", { chat_id: chat, action: "typing" }); p = await plan({ worry, amountAtRisk: amount }, now); } // AI timed out: one retry (Telegram allows the time)
@@ -180,6 +183,11 @@ export async function answer(chat: number, q: Pending, ans: string, send: Send, 
     if (!ok && !q.stated) { const nq = question("amount", worry, q.amount, false); pending.set(chat, { ask: "amount", worry, amount: q.amount, stated: false, at: Date.now() });
       return send("sendMessage", { chat_id: chat, text: nq.text, parse_mode: "HTML", disable_web_page_preview: true, reply_markup: { inline_keyboard: nq.buttons } }); }
     return respond(chat, worry, ok ? amt! : q.amount, q.stated || ok, send, now);
+  }
+  if (q.ask === "place") {
+    const a = ans.trim().replace(/[.!]+$/, "");
+    const place = /^p:none$|^(none|nowhere|anywhere|global(ly)?|worldwide|not tied.*|no specific place)$/i.test(a) ? "(no specific place)" : /^(in|at|near|around)\s/i.test(a) ? a : `in ${a}`;
+    return respond(chat, short(`${q.worry.replace(/[.\s]+$/, "")}, ${place}`), q.amount, q.stated, send, now);
   }
   if (q.ask === "amount") {
     const a = ans.trim(); const skip = /^(a:skip|skip|no|none|idk|not sure|don'?t know)$/i.test(a);
@@ -225,6 +233,7 @@ export async function handleUpdate(u: any, send = tg, now = new Date()): Promise
 export function looksLikeAnswer(q: Pending, text: string): boolean {
   const t = text.trim();
   if (q.ask === "time") return t.length <= 60 && (timeframeIn(t) || /^(no end date|any ?time|whenever|none|idk|not sure)$/i.test(t));
+  if (q.ask === "place") return t.length <= 40 && !/\d/.test(t) && !timeframeIn(t);
   if (q.ask === "amount") return t.length <= 40 && (/^\$?\s?\d/.test(t) || /^(skip|none|idk|not sure)$/i.test(t));
   if (q.ask === "game") return t.length <= 60 && (/^\s*#?\d\s*$/.test(t) || timeframeIn(t) || /\b(vs\.?|v|against)\b/i.test(t));
   return t.length <= 200 && (NO_LOSS.test(t) || /\b(i|we|my|our)\b.*\b(own|have|hold|bought|invested|lose|rent|lease|mortgage|staked?|bet)\b/i.test(t) || /^\$?\d/.test(t));

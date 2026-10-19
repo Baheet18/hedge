@@ -53,7 +53,9 @@ export function groundThreshold(w: Worry): Worry {
   return ok ? w : { ...w, threshold: null, unit: null };
 }
 export function ground(w0: Worry): Worry {
-  const w = groundThreshold(w0);
+  let w = groundThreshold(w0);
+  // Never invent a place either: keep the AI's location only if the user wrote it (first word of it appears in the text).
+  if (w.location && !w.text.toLowerCase().includes(w.location.toLowerCase().split(/[\s,]+/)[0]!) && !placesIn(w.text).some((p) => w.location!.toLowerCase().includes(p))) w = { ...w, location: null };
   if (/\b(no end date|any ?time|whenever|no deadline)\b/i.test(w.text)) return { ...w, deadline: null, windowStart: null, timeframeGiven: true, assumptions: ["No end date: cover runs only until the market closes."] };
   if (timeframeIn(w.text)) return { ...w, timeframeGiven: true, assumptions: [] };
   const assumptions: string[] = [];
@@ -74,6 +76,55 @@ export function looksLikeView(text: string, amountStated = false): boolean {
   if (EXPOSURE.test(rest)) return false;
   return opinion || PREDICT.test(rest) || !/\d/.test(rest);
 }
+// ---------- places ----------
+/** Place → the wider places it sits in (so a Lagos worry vs a Nigeria market is wider cover, not a different place). */
+const PLACES: Record<string, string[]> = {
+  lagos: ["nigeria"], abuja: ["nigeria"], "port harcourt": ["nigeria"], nigeria: [], accra: ["ghana"], ghana: [], nairobi: ["kenya"], kenya: [],
+  johannesburg: ["south africa"], "cape town": ["south africa"], "south africa": [], cairo: ["egypt"], egypt: [],
+  dubai: ["uae"], "abu dhabi": ["uae"], uae: [], "united arab emirates": ["uae"], dfm: ["dubai", "uae"], riyadh: ["saudi arabia"], "saudi arabia": [],
+  london: ["uk"], manchester: ["uk"], uk: [], "united kingdom": ["uk"], england: ["uk"], paris: ["france"], france: [], berlin: ["germany"], germany: [], europe: [],
+  miami: ["florida", "us"], tampa: ["florida", "us"], orlando: ["florida", "us"], florida: ["us"], houston: ["texas", "us"], dallas: ["texas", "us"], austin: ["texas", "us"], texas: ["us"],
+  "new york": ["us"], nyc: ["new york", "us"], "los angeles": ["california", "us"], "san francisco": ["california", "us"], california: ["us"], louisiana: ["us"], "new orleans": ["louisiana", "us"],
+  carolina: ["us"], georgia: ["us"], chicago: ["us"], us: [], usa: ["us"], "united states": ["us"], america: ["us"],
+  toronto: ["canada"], canada: [], "mexico city": ["mexico"], mexico: [], "sao paulo": ["brazil"], brazil: [], mumbai: ["india"], delhi: ["india"], india: [],
+  singapore: [], "hong kong": ["china"], shanghai: ["china"], beijing: ["china"], china: [], tokyo: ["japan"], japan: [], sydney: ["australia"], australia: [],
+};
+const PLACE_LABEL: Record<string, string> = { us: "the US", uk: "the UK", uae: "the UAE", dfm: "Dubai", nyc: "New York", usa: "the US", "united states": "the US" };
+const title = (k: string) => PLACE_LABEL[k] ?? k.replace(/\b[a-z]/g, (x) => x.toUpperCase());
+/** Known places named in a text. "US" only counts in capitals (not the word "us"). */
+export function placesIn(text: string): string[] {
+  const low = text.toLowerCase(); const out: string[] = [];
+  for (const k of Object.keys(PLACES)) {
+    if (k === "us") { if (/\b(U\.S\.|US|USA)\b/.test(text)) out.push("us"); continue; }
+    if (new RegExp(`\\b${k.replace(/\s+/g, "\\s+")}\\b`).test(low)) out.push(k);
+  }
+  return out;
+}
+const widen = (k: string): string[] => [k, ...(PLACES[k] ?? []).flatMap(widen)];
+/** "Tracks Dubai, your property is in Lagos." when the market names a place and none of it overlaps the worry's place. */
+export function placeGap(w: Worry, marketText: string): string | null {
+  if (!w.location) return null;
+  const mine = new Set([...placesIn(w.location), ...placesIn(w.text)].flatMap(widen)); if (!mine.size) return null;
+  const theirs = placesIn(marketText); if (!theirs.length) return null;
+  if (theirs.some((p) => widen(p).some((x) => mine.has(x)) || mine.has(p))) return null;
+  const t = w.text.toLowerCase();
+  const noun = /real estate|property|properties|house|home|flat|apartment|estate|land|building/.test(t) ? "property is" : /\btrip|travel|flight|holiday|vacation/.test(t) ? "trip is" : /wedding|event|concert|festival/.test(t) ? "event is" : /business|shop|store|firm|company|farm/.test(t) ? "business is" : "worry is";
+  return `Tracks ${title(theirs[0]!)}, your ${noun} in ${w.location}.`;
+}
+/** Worries whose outcome depends on where they are. */
+const LOCAL = /\b(real estate|property|properties|house prices?|home prices?|housing|my (house|home|flat|apartment|land|building|shop|farm|crops?)|rent(s|al)?|land prices?|estate development|construction|hurricanes?|storms?|floods?|flooding|rain|snow|heat ?waves?|weather|typhoons?|cyclones?|wildfires?|earthquakes?|droughts?|local currency|my currency|exchange rate|power outage|blackout|curfew|protests?|strike)\b/i;
+const CURRENCY_PLACE = /\b(naira|ngn|cedi|rand|shilling|dirham|riyal|rupee|peso|lira|yen|yuan|pound|euro|cad|aud)\b/i;
+const PLACE_PHRASE = /\b(?:in|at|near|around|across)\s+(?!(?:a|an|the|my|our|your|this|that|next|value|price|prices|time|total|full|case|q[1-4]|\d)\b)([a-z][a-z.'-]{2,}(?:\s+[a-z][a-z.'-]{2,})?)/i;
+const MONTHS_RE = /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
+/** Has the user named a place (or said it isn't tied to one)? */
+export function placeGiven(text: string, w?: Pick<Worry, "location"> | null): boolean {
+  if (/\(no specific place\)/i.test(text) || placesIn(text).length || CURRENCY_PLACE.test(text)) return true;
+  if (w?.location && text.toLowerCase().includes(w.location.toLowerCase().split(/[\s,]+/)[0]!)) return true;
+  const m = PLACE_PHRASE.exec(text); return !!m && !MONTHS_RE.test(m[1]!) && !/^(20\d\d|crash|danger|trouble|loss|debt|value|general|total)$/i.test(m[1]!);
+}
+/** Ask "Where is it?" for a location-dependent worry with no place. */
+export const needsPlace = (text: string, w?: Pick<Worry, "location"> | null) => LOCAL.test(text) && !placeGiven(text, w);
+
 export function rulesParse(text: string, now = new Date()): Worry {
   const t = text.toLowerCase();
   const num = t.match(/(\d[\d,]*(?:\.\d+)?)\s*(k)?\b/);

@@ -23,19 +23,21 @@ test("live flow: real estate view → 'I own a estate development firm' → asks
     const q2 = b.msgs()[1]; assert.match(q2.text, /How much would you lose\?/, "no amount in the answer → ask, don't keep $100 quietly");
     assert.match(plain(q2.text), /Worry: I think the real estate market will crash\. I own a estate development firm/);
     await handleUpdate(tap(q2, "a:100000"), b.send, NOW);
-    const q3 = b.msgs()[2]; assert.match(q3.text, /By when\?/); assert.match(q3.text, /Amount: \$100000\.00(\n|$)/);
+    const qp = b.msgs()[2]; assert.match(qp.text, /Where is it\?/, "real estate with no place → ask where (after loss and amount)");
+    await handleUpdate(say("Lagos", qp), b.send, NOW);
+    const q3 = b.msgs()[3]; assert.match(q3.text, /By when\?/); assert.match(plain(q3.text), /firm, in Lagos/); assert.match(q3.text, /Amount: \$100000\.00(\n|$)/);
     await handleUpdate(tap(q3, "t:year"), b.send, NOW);
     assert.ok(b.sent.filter((s) => s[0] === "answerCallbackQuery").length === 2, "every tap is answered");
-    const card = b.msgs()[3]; assert.ok(card, "the End of year tap gets a reply");
+    const card = b.msgs()[4]; assert.ok(card, "the End of year tap gets a reply");
     assert.match(card.text, /hedge|No good hedge/i); assert.doesNotMatch(card.text, /By when|expired|error/i);
     assert.match(card.text, /\$100000\.00|No good hedge/);
     // Typed amount and Skip also work
     const b2 = bot(); await handleUpdate(say("I think the real estate market will crash"), b2.send, NOW);
     await handleUpdate(say("I own a estate development firm", b2.msgs()[0]), b2.send, NOW);
-    await handleUpdate(say("about $250k", b2.msgs()[1]), b2.send, NOW); assert.match(b2.msgs()[2].text, /Amount: \$250000\.00(\n|$)/);
+    await handleUpdate(say("about $250k", b2.msgs()[1]), b2.send, NOW); assert.match(b2.msgs()[2].text, /Where is it\?/); assert.match(b2.msgs()[2].text, /Amount: \$250000\.00(\n|$)/);
     const b3 = bot(); await handleUpdate(say("I think the real estate market will crash"), b3.send, NOW);
     await handleUpdate(say("I own a estate development firm", b3.msgs()[0]), b3.send, NOW);
-    await handleUpdate(tap(b3.msgs()[1], "a:skip"), b3.send, NOW); assert.match(b3.msgs()[2].text, /By when\?/); assert.match(b3.msgs()[2].text, /Amount: \$100\.00(\n|$)/);
+    await handleUpdate(tap(b3.msgs()[1], "a:skip"), b3.send, NOW); assert.match(b3.msgs()[2].text, /Where is it\?/); assert.match(b3.msgs()[2].text, /Amount: \$100\.00(\n|$)/);
     await handleUpdate(say("lots", b3.msgs()[1]), b3.send, NOW); assert.match(b3.msgs()[3].text, /couldn't read an amount/);
   } finally { restore(); }
 }));

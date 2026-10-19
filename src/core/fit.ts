@@ -1,6 +1,7 @@
 // Fit rating. AI reads worry vs. market rules and proposes fit/side/gaps; code verifies quotes and checks timing and thresholds.
 import { geminiJson, llmAvailable } from "./llm.js";
 import type { Candidate, Fit, FitJudgement, Worry } from "./types.js";
+import { placeGap } from "./worry.js";
 
 export const FIT_ORDER: Record<Fit, number> = { exact: 3, close: 2, loose: 1, none: 0 };
 /** The one place a fit becomes words, used by the free match, the paid plan and the Telegram card so they can't disagree. */
@@ -129,6 +130,9 @@ export function codeChecks(w: Worry, c: Candidate, j: FitJudgement, now = new Da
   if (/\b(my job|lose (my )?job|laid off|layoff|fired|my (income|salary|sales|business|customers))\b/i.test(w.text) && /\b(recession|gdp|unemployment rate|nber|jobs report|payrolls)\b/i.test(`${c.title} ${c.rules.slice(0, 400)}`) && FIT_ORDER[fit] > FIT_ORDER.loose) {
     fit = "loose"; gaps.unshift("Proxy: this pays on a macro event, not on you losing your job. A recession can happen while you keep your job, and you can lose it without one.");
   }
+  // Different place: the market tracks somewhere else, so it's a proxy at best.
+  const pg = placeGap(w, `${c.title} ${c.rules.slice(0, 400)}`);
+  if (pg) { gaps.unshift(pg); if (FIT_ORDER[fit] > FIT_ORDER.loose) fit = "loose"; }
   // Any listed gap caps the fit at close.
   if (fit === "exact" && gaps.length) fit = "close";
   // Never empty: an exact fit still only pays on the market's trigger definition.
