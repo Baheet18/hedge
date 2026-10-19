@@ -137,5 +137,13 @@ with the free match: verdict, market and venue, side, price, cost → payout, co
 (Open on Polymarket, or Buy on World via PayBox). Bets get "that's a bet, not a hedge" with a hedge framing. World data isn't
 public server-side, so standalone matches come from Polymarket; World buys go through a PayBox agent.
 
+Follow-up questions, so the bot never guesses:
+- **No timeframe** ("I'm worried Bitcoin crashes"): asks *By when?* with buttons (this week / this month / end of year / no end date) or a typed date.
+- **A view, not a loss** ("the real estate market will crash"): asks what you'd actually lose; "just my view" gets "that's a view, not a hedge".
+- **Undated sports bet** ("my Lakers bet"): if more than one market fits, asks which game.
+No server state: the pending worry and amount are written into the question message, and come back with the button tap
+(`callback_query.message`) or a reply (`reply_to_message`). A per-chat in-memory note also catches a plain typed answer on a warm instance.
+Dates the user didn't give are never invented: an open-ended worry gets no end date (said plainly), a scheduled event states the assumed date.
+
 Webhook: `POST /api/telegram` on this Vercel app, authenticated with Telegram's `X-Telegram-Bot-Api-Secret-Token` (derived from
 `HEDGE_TG_BOT_TOKEN`, a Vercel env var). Set it with `setWebhook url=https://hedge-paybox.vercel.app/api/telegram secret_token=<derived>`.

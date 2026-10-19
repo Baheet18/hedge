@@ -1,9 +1,9 @@
 // Orchestration. Venue-agnostic: World (agent-supplied) and Polymarket (searched) candidates are ranked together by fit.
 // World is where PayBox can buy today, so only a World pick gets a world_buy_outcome instruction.
 import { costToCover, type Cost } from "./math.js";
-import { aiRate, finalize, FIT_ORDER, overlap, titleNumbers } from "./fit.js";
+import { aiRate, finalize, FIT_ORDER, fitLabel, overlap, titleNumbers } from "./fit.js";
 import { normalizeWorldAll, referenceCandidates, polymarketDepth } from "./universe.js";
-import { understand } from "./worry.js";
+import { understand, looksLikeView } from "./worry.js";
 import type { Candidate, Fit, Worry } from "./types.js";
 
 export interface PlanInput { worry: string; amountAtRisk: number; maxCost?: number | null; candidates?: unknown[]; skipReference?: boolean }
@@ -79,16 +79,23 @@ export async function preview(worry: string) {
     "Then call hedge_plan with the worry, amountAtRisk and those market (or event) objects as candidates. Hedge also checks Polymarket itself." ] };
 }
 
-function decide(o: Option): string[] {
+/** Why an option can't be recommended. Each reason is a predicate with no subject ("is priced at…"), so it reads after "the closest market". */
+export function decide(o: Option): string[] {
   const why: string[] = [];
-  if (o.fit === "none") why.push("no listed market pays when this happens");
-  if (o.ratedBy !== "ai" && FIT_ORDER[o.fit] < FIT_ORDER.close) why.push("it was matched by keywords only (AI unavailable), so it can't be recommended");
-  if (!o.cost) why.push("the matching side has no live price");
-  else if (o.cost.price < MIN_TICK) why.push(`it's priced at ${cents(o.cost.price)}, below 1¢, so the market thinks it almost can't happen: it's near-certain not to pay, or the price is stale`);
-  else if (o.cost.price > 1 - MIN_TICK) why.push(`it's priced above 99¢, so it's no cover`);
-  else if (o.cost.price + o.cost.feePerShare >= MAX_PRICE) why.push(`it costs ${Math.round((o.cost.price + o.cost.feePerShare) * 100)}¢ per $1 of cover, so it protects almost nothing`);
-  else if (o.cost.shares <= 0) why.push("no cover is available at this price");
+  if (o.fit === "none") why.push("doesn't pay when this happens");
+  if (o.ratedBy !== "ai" && FIT_ORDER[o.fit] < FIT_ORDER.close) why.push("was matched by keywords only (AI unavailable), so it can't be recommended");
+  if (!o.cost) why.push("has no live price on the side that pays");
+  else if (o.cost.price < MIN_TICK) why.push(`is priced at ${cents(o.cost.price)}, below 1¢: the market thinks it almost can't happen, so it's near-certain not to pay (or the price is stale)`);
+  else if (o.cost.price > 1 - MIN_TICK) why.push("is priced above 99¢, so it gives no cover");
+  else if (o.cost.price + o.cost.feePerShare >= MAX_PRICE) why.push(`costs ${Math.round((o.cost.price + o.cost.feePerShare) * 100)}¢ per $1 of cover, so it protects almost nothing`);
+  else if (o.cost.shares <= 0) why.push("has no cover available at this price");
   return why;
+}
+const andJoin = (xs: string[]) => xs.length <= 1 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`;
+/** "No good hedge" headline in full sentences. */
+export function noHedgeHeadline(o: Option | undefined): string {
+  if (!o || o.fit === "none") return "No good hedge: no listed market pays when this happens.";
+  return `No good hedge: the closest market, "${o.market.title}", ${andJoin(decide(o))}.`;
 }
 
 export let timing: any = null;
@@ -174,13 +181,12 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
   };
   if (!best) {
     verdict = "no_good_hedge";
-    headline = opts[0] && opts[0].fit !== "none" ? `No good hedge: ${decide(opts[0]).join("; ")}.` : "No good hedge: no listed market pays when this happens.";
-    if (opts[0] && opts[0].fit !== "none" && opts[0].ratedBy === "ai") headline = `No good hedge: the nearest market ${decide(opts[0]).join("; ")}.`;
+    headline = noHedgeHeadline(opts[0]);
     if (!worldAll.length) { headline += ` World wasn't searched yet: run world_search ${JSON.stringify(w.searchQueries[0] ?? w.subject)} and pass the results.`; next.push(`World wasn't searched yet. Call world_search ${JSON.stringify(w.searchQueries[0] ?? w.subject)}, then world_get_events(ticker) for the top 1-2 hits, and pass them as candidates.`); }
     else next.push("Don't buy anything for this worry. Tell the user plainly there is no good hedge listed.");
   } else if (best.buyableViaPayBox) {
     verdict = "hedge";
-    headline = `${lead(best)}${best.fit === "exact" ? "Good" : best.fit === "close" ? "Decent" : "Partial"} hedge: buy ${best.side} on World "${best.market.title}" for ${usd(best.cost!.cost)} → pays ${usd(best.cost!.payout)} if it happens (${best.fit} fit). ${cap1(share(best))}`;
+    headline = `${lead(best)}${fitLabel(best.fit).grade} hedge: buy ${best.side} on World "${best.market.title}" for ${usd(best.cost!.cost)} → pays ${usd(best.cost!.payout)} if it happens (${best.fit} fit). ${cap1(share(best))}`;
     buy(best);
   } else {
     verdict = "hedge_elsewhere";
@@ -194,6 +200,8 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
     if (alt) { const why = FIT_ORDER[best.fit] > FIT_ORDER[alt.fit] ? `it fits better (${best.fit} vs ${alt.fit}${dist(alt) > dist(best) ? `; the in-window market triggers at a different level` : ""})` : "the in-window market isn't good cover";
       headline += ` Picked over the cheaper in-window "${alt.market.title}" (${cents(alt.cost!.price)}) because ${why}; that one only pays inside your window, so consider it if the longer cover isn't worth ${best.cost ? cents(best.cost.price) : "the extra"}.`; }
   }
+  if (w.assumptions?.length) headline += ` Assumed: ${w.assumptions.join(" ")}`;
+  if (looksLikeView(w.text)) next.unshift("This reads like a view (a prediction) with no stated loss. Ask the user what they'd actually lose if it happens (do they own the asset or property, and how much?) before calling it a hedge; if they have no exposure, tell them it's a view, not a hedge, and don't buy.");
   if (!worldAll.length && !w.isBet && verdict !== "no_good_hedge") { headline += " Note: World markets weren't included in this request, so nothing here is buyable through PayBox. Pass World candidates (world_search → world_get_events) to include them.";
     next.unshift("World markets were NOT included (none were passed as candidates; Hedge can't reach World directly). Call world_search with the worry's query, world_get_events(ticker) for the top hits, and call hedge_plan again with them as candidates."); }
   return { ...base, verdict, headline, best, buyableNow: buyableNow && buyableNow !== best ? buyableNow : null, alternatives: opts.filter((o) => o !== best && o !== buyableNow && o.fit !== "none").slice(0, 3), worldIncluded: worldAll.length > 0,
@@ -204,8 +212,12 @@ export async function plan(input: PlanInput, now = new Date()): Promise<Plan> {
 export async function freeMatch(input: PlanInput, now = new Date()) {
   // Free tier with World candidates skips the Polymarket search to stay well inside PayBox's 10s call limit.
   const p = await plan({ ...input, skipReference: !!input.candidates?.length }, now);
+  return freeView(p, input);
+}
+/** The free-tier view of a plan (same fit, same wording source as the paid plan). */
+export function freeView(p: Plan, input: PlanInput) {
   const o = p.buyableNow ?? p.best ?? null;
-  const show = (x: Option | null) => x && { venue: x.market.venue, marketId: x.market.marketId, title: x.market.title, side: x.side, fit: x.fit, buyableViaPayBox: x.buyableViaPayBox,
+  const show = (x: Option | null) => x && { venue: x.market.venue, marketId: x.market.marketId, title: x.market.title, side: x.side, fit: x.fit, fitLabel: fitLabel(x.fit).title, buyableViaPayBox: x.buyableViaPayBox,
     price: x.cost?.price ?? null, costToCover: x.cost?.cost ?? null, payout: x.cost?.payout ?? null, coveragePct: x.cost ? Math.round(x.cost.payout / p.amountAtRisk * 1000) / 10 : null, whatsNotCovered: x.whatsNotCovered, warnings: x.warnings, closeTime: x.market.closeTime, url: x.market.url };
   const noWorld = !(input.candidates?.length);
   const next: string[] = [];
@@ -216,7 +228,7 @@ export async function freeMatch(input: PlanInput, now = new Date()) {
     else if (noWorld) next.push("Nothing outside World fits. Search World as above before telling the user there's no hedge; don't call hedge_plan yet.");
     else next.push("Tell the user plainly there's no good hedge listed for this worry. Don't call hedge_plan unless they supply other markets.");
   }
-  return { tier: "free", verdict: p.verdict, headline: p.headline, worry: { summary: p.worry.summary, category: p.worry.category, threshold: p.worry.threshold, deadline: p.worry.deadline, location: p.worry.location },
+  return { tier: "free", verdict: p.verdict, headline: p.headline, worry: { summary: p.worry.summary, category: p.worry.category, threshold: p.worry.threshold, deadline: p.worry.deadline, location: p.worry.location, assumptions: p.worry.assumptions ?? [] },
     amountAtRisk: p.amountAtRisk, match: show(o), closestNotRecommended: !o && !p.aiDegraded && p.alternatives[0] && p.alternatives[0].fit !== "none" ? { ...show(p.alternatives[0]), why: "Only a loose fit or not good value; shown for reference, don't buy it as cover." } : null, polymarketReference: p.best && p.best !== o ? show(p.best) : null,
     worldSearch: noWorld ? p.worry.searchQueries : [], next, searched: p.searched, aiDegraded: p.aiDegraded, disclaimer: p.disclaimer, ms: p.ms, timing };
 }

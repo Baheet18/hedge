@@ -14,6 +14,8 @@ export interface Worry {
   keyTerms: string[];
   isBet: boolean;               // speculation ("put money on the Knicks"), not protection against a loss
   parsedBy: "ai" | "regex" | "rules"; // regex = confident pattern parse (no AI needed); rules = fallback
+  timeframeGiven?: boolean;     // the user stated a time (code check, not the AI)
+  assumptions?: string[];       // plain notes on anything assumed (e.g. no end date), shown to the user
 }
 export interface Candidate {
   source: "world" | "reference";

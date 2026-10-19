@@ -20,7 +20,7 @@ export async function geminiJson<T>(kind: keyof typeof MODELS, system: string, u
       const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
         method: "POST", signal: ctl.signal, headers: { "content-type": "application/json", "x-goog-api-key": key },
         body: JSON.stringify({ systemInstruction: { parts: [{ text: system }] }, contents: [{ role: "user", parts: [{ text: user }] }],
-          generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: schema, thinkingConfig: { thinkingLevel: thinking } } }),
+          generationConfig: { temperature: 0, responseMimeType: "application/json", responseSchema: schema, thinkingConfig: { thinkingLevel: thinking } } }),
       });
       if (!r.ok) { last = new Error(`Gemini ${model} HTTP ${r.status}`); if (r.status === 429) cooldown.set(model, Date.now() + 15 * 60_000); if (r.status === 404) cooldown.set(model, Date.now() + 864e5); continue; }
       const j: any = await r.json();

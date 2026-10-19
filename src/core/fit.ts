@@ -3,6 +3,27 @@ import { geminiJson, llmAvailable } from "./llm.js";
 import type { Candidate, Fit, FitJudgement, Worry } from "./types.js";
 
 export const FIT_ORDER: Record<Fit, number> = { exact: 3, close: 2, loose: 1, none: 0 };
+/** The one place a fit becomes words, used by the free match, the paid plan and the Telegram card so they can't disagree. */
+export function fitLabel(fit: Fit): { fit: Fit; icon: string; title: string; grade: string } {
+  return fit === "exact" ? { fit, icon: "🛡️", title: "Good hedge", grade: "Good" }
+    : fit === "close" ? { fit, icon: "✅", title: "Decent hedge", grade: "Decent" }
+    : fit === "loose" ? { fit, icon: "⚠️", title: "Partial hedge (loose fit)", grade: "Partial" }
+    : { fit, icon: "🚫", title: "No hedge", grade: "No" };
+}
+const THRESHOLD_TALK = /\b(threshold|strike|price level|price target|trigger(s|ed)? at|pays (at|from|only (at|above|below))|higher (bar|level|price)|lower (bar|level|price)|different (level|price|number))\b|\$\d[\d,.]*k?\b[^.]{0,30}\bnot\b[^.]{0,10}\$\d/i;
+const words = (g: string) => new Set(g.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((x) => x.length > 3));
+/** One line per gap: drop AI threshold lines when the code already wrote the threshold line, and near-duplicate sentences. */
+export function dedupeGaps(gaps: string[]): string[] {
+  const hasCodeThreshold = gaps.some((g) => /^Threshold:/.test(g));
+  const out: string[] = [];
+  for (const g of gaps) {
+    if (hasCodeThreshold && !/^Threshold:/.test(g) && THRESHOLD_TALK.test(g)) continue;
+    if (/^Threshold:/.test(g) && out.some((o) => /^Threshold:/.test(o))) continue;
+    const a = words(g); const dup = out.some((o) => { const b = words(o); const inter = [...a].filter((x) => b.has(x)).length; const m = Math.min(a.size, b.size); return m >= 4 && inter / m >= 0.8; });
+    if (!dup) out.push(g);
+  }
+  return out;
+}
 const DOWN: Record<Fit, Fit> = { exact: "close", close: "loose", loose: "none", none: "none" };
 export const down = (f: Fit, n = 1): Fit => (n <= 0 ? f : down(DOWN[f], n - 1));
 const DIFF = /\b(closes before|ends before|after your|outside your|shorter|longer window|whole (state|country)|wider|narrower|area|region|statewide|county|city-level|definition|defined as|only (counts|pays|if)|doesn't count|does not count|not count|tropical storm|declar|officially)/i;
@@ -112,7 +133,7 @@ export function codeChecks(w: Worry, c: Candidate, j: FitJudgement, now = new Da
   // Never empty: an exact fit still only pays on the market's trigger definition.
   if (fit !== "none" && (fit === "exact" || !gaps.length)) gaps.push(...definitionGaps(w, c));
   if ((j.side === "YES" ? c.yesAsk : c.noAsk) === null) gaps.push("No live price for this side, so it can't be costed.");
-  return { ...j, fit, gaps: [...new Set(gaps)].slice(0, 6) };
+  return { ...j, fit, gaps: dedupeGaps([...new Set(gaps)]).slice(0, 6) };
 }
 
 /** Trigger-definition gaps read from the market's own rules (what the market counts), so "not covered" is never empty. */
@@ -140,16 +161,20 @@ The worry is the BAD outcome for the user. For each market: side = the side (YES
 A city/trip worry vs a state-wide season-long market is close at best; if the market's definition excludes part of the worry (e.g. hurricanes only, so a tropical storm doesn't count) drop another grade. A personal loss (job loss, lower sales) vs a macro market (recession, GDP) is loose: the macro event can happen without the loss and vice versa. Be strict. A correlated proxy is "loose" at best. covered: one plain sentence on when it pays, in the user's terms.
 quote: copy ONE sentence verbatim from the market rules that defines the payout (or null). gaps: up to 3 things NOT covered, each ONE short plain sentence (max 15 words) a non-expert understands, stating a real difference between the worry and the market, e.g. "Settles on Binance's BTC/USDT price, not your exchange's." Never list something that matches the worry (if the threshold, place or date is the same, don't mention it). No parentheses, no hedging words like 'but', no prices. Return [] if nothing is missing.`;
 
-/** AI ratings (null if AI unavailable). Uses the raw worry text, so it can run in parallel with understand(). */
-const judgeCache = new Map<string, { at: number; r: FitJudgement[] }>();
+/** AI ratings (null if AI unavailable). Cached per worry + market (not per market list), so the free match and the paid plan
+ *  reuse the same rating for the same market even when one of them saw more markets. Prices are re-read live; only the judgement is cached. */
+const judgeCache = new Map<string, { at: number; r: FitJudgement }>();
+const judgeKey = (w: Worry, c: Candidate) => `${w.text.toLowerCase().replace(/\s+/g, " ").trim()}|${c.source}:${c.marketId}|${c.rules.length}`;
 export async function aiRate(w: Worry, cs: Candidate[], now = new Date(), timeoutMs = 12000): Promise<FitJudgement[] | null> {
   if (!llmAvailable() || !cs.length) return null;
-  // Same worry + same markets within 15 minutes: reuse the ratings (prices are re-read live each time; only the fit judgement is cached).
-  const key = `${w.text.toLowerCase().replace(/\s+/g, " ").trim()}|${cs.map((c) => c.marketId).join(",")}`; const hit = judgeCache.get(key);
-  if (hit && process.env.HEDGE_NO_CACHE !== "1" && Date.now() - hit.at < 15 * 6e4) return hit.r;
-  const r = await aiRateUncached(w, cs, now, timeoutMs);
-  if (r) { if (judgeCache.size > 500) judgeCache.clear(); judgeCache.set(key, { at: Date.now(), r }); }
-  return r;
+  const useCache = process.env.HEDGE_NO_CACHE !== "1";
+  const cached = cs.map((c) => { const h = useCache ? judgeCache.get(judgeKey(w, c)) : undefined; return h && Date.now() - h.at < 15 * 6e4 ? h.r : null; });
+  const todo = cs.filter((_, i) => !cached[i]);
+  if (!todo.length) return cached as FitJudgement[];
+  const fresh = await aiRateUncached(w, todo, now, timeoutMs);
+  if (!fresh) return null;
+  if (judgeCache.size > 2000) judgeCache.clear();
+  let k = 0; return cs.map((c, i) => { if (cached[i]) return cached[i]!; const r = fresh[k++]!; judgeCache.set(judgeKey(w, c), { at: Date.now(), r }); return r; });
 }
 async function aiRateUncached(w: Worry, cs: Candidate[], now: Date, timeoutMs: number): Promise<FitJudgement[] | null> {
   try {
